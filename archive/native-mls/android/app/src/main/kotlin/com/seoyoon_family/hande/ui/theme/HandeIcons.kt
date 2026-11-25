@@ -110,7 +110,7 @@ object HandeIcons {
     fun reorder(c: HandeColors, line: Color = c.ink): ImageVector = lineIcon("hande.reorder", IconPaths.reorder, c, line)
     fun cover(c: HandeColors, line: Color = c.ink): ImageVector = lineIcon("hande.cover", IconPaths.cover, c, line)
 
-    // ---- 글리프(Material Symbols 짝 — arrow_back · close · settings · add · arrow_upward · share · content_copy · open_in_new · expand_more). 디자인 3차-A 원문의 선 그림.
+    // ---- 글리프(Material Symbols 짝 — arrow_back · close · settings · add · arrow_upward · share · content_copy · reply · 선택 · open_in_new · expand_more). 디자인 3차-A 원문의 선 그림.
 
     private fun glyph(name: String, d: String, color: Color, width: Float): ImageVector = builder(name).strokePath(d, color, width).build()
 
@@ -129,6 +129,10 @@ object HandeIcons {
         color, 1.6f,
     )
     fun copy(color: Color): ImageVector = glyph("hande.glyph.copy", "M9 9h10v12H9zM5 15V3h10", color, 1.8f)
+    /** 말풍선 메뉴 「답장」(iOS `arrowshape.turn.up.left` 짝 — Material `reply`). */
+    fun reply(color: Color): ImageVector = glyph("hande.glyph.reply", "M9 14L4 9l5-5M4 9h10a6 6 0 0 1 6 6v5", color, 1.8f)
+    /** 말풍선 메뉴 「선택해서 복사」(iOS `selection.pin.in.out` 짝 — 글 줄 위 선택 손잡이 둘). */
+    fun selectText(color: Color): ImageVector = glyph("hande.glyph.select-text", "M4 6h16M4 12h10M4 18h7M17 10v10M15 10h4M15 20h4", color, 1.8f)
     fun openInNew(color: Color): ImageVector = glyph("hande.glyph.open-in-new", "M14 4h6v6M20 4l-9 9M18 14v6H4V6h6", color, 1.8f)
     fun expandMore(color: Color): ImageVector = glyph("hande.glyph.expand-more", "M6 9l6 6 6-6", color, 2f)
 }

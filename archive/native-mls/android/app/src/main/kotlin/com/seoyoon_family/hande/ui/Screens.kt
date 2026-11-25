@@ -185,6 +185,7 @@ import com.seoyoon_family.hande.core.HandeThemeMode
 import com.seoyoon_family.hande.core.HubUi
 import com.seoyoon_family.hande.core.LinkPreviews
 import com.seoyoon_family.hande.core.PreviewSites
+import com.seoyoon_family.hande.core.MessageCopy
 import com.seoyoon_family.hande.core.ReplyQuote
 import com.seoyoon_family.hande.core.SwipeReply
 import com.seoyoon_family.hande.core.LoginLauncher
@@ -1440,7 +1441,7 @@ fun RoomScreen(
     }
     fun selectedText(): String? =
         if (!selectingByKey) null
-        else room.messages.firstOrNull { it.seq == keyCursor && !it.attachment }?.text?.let { ReplyQuote.visibleText(it) }?.takeIf { it.isNotBlank() }
+        else room.messages.firstOrNull { it.seq == keyCursor }?.let { MessageCopy.text(it) }
     /** #880 왼쪽으로 민 말풍선에 답장: 답할 글을 정하고 작성창에 커서를 넣는다. 저장된 글이면 릴레이 seq 를 함께(v2 `#번호`). */
     fun startReply(m: MessageUi) {
         if (!hasComposer) return
@@ -1455,8 +1456,8 @@ fun RoomScreen(
         if (index >= 0) alertScope.launch { listState.animateScrollToItem(index) } else toast(Strings.replyTargetMissing)
     }
     fun select(step: Int) {
-        // 복사할 글이 있는 말풍선만 오간다(첨부 제외).
-        val rows = room.messages.filter { !it.attachment && it.text.isNotBlank() }.map { it.seq }
+        // 복사할 글이 있는 말풍선만 오간다(첨부·복호화 실패 제외 — 꾹 누르기 메뉴와 같은 `MessageCopy` 규칙).
+        val rows = room.messages.filter { MessageCopy.text(it) != null }.map { it.seq }
         val target = HardwareKeys.selectTarget(rows, keyCursor, step) ?: return
         keyCursor = target
         selectingByKey = true
@@ -1630,6 +1631,8 @@ fun RoomScreen(
                             MessageRow(
                                 m, previews, sites, opening = opening == m.seq, onAttachment = onAttachment, thumb = thumb,
                                 onReplyQuote = onReplyQuote,
+                                onReply = if (hasComposer) ({ startReply(m) }) else null,
+                                onSelectCopy = { text -> selectCopyText = text },
                             ) { id -> onAlertRef(i, id) }
                         }
                     }
@@ -1878,9 +1881,17 @@ private fun MessageRow(
     thumb: ThumbSource? = null,
     /** #880 인용 상자를 누르면 그 seq 글로. */
     onReplyQuote: ((Long) -> Unit)? = null,
+    /** 꾹 누르기 메뉴 「답장」(보낼 수 있는 방에서만 — null 이면 항목 없음). */
+    onReply: (() -> Unit)? = null,
+    /** 꾹 누르기 메뉴 「선택해서 복사」 — 그 글을 「선택해서 복사」 창으로. */
+    onSelectCopy: ((String) -> Unit)? = null,
     onAlertRef: ((String) -> Unit)? = null,
 ) {
     val colors = LocalHandeColors.current
+    val haptic = LocalHapticFeedback.current
+    // 꾹 누르기 메뉴(iOS `MessageCopyMenu` 와 같은 항목): 복사할 글이 없으면(첨부·복호화 실패·빈 글) 메뉴를 붙이지 않는다.
+    val copyText = remember(m) { MessageCopy.text(m) }
+    var menuOpen by remember(m.seq) { mutableStateOf(false) }
     val agent = !m.mine && AgentActors.isAgentDevice(m.sender)
     // #880 답장 글(iOS 와 같이 사람 말풍선만 — 내 글 포함): 인용 상자 + 내 글. 링크·참조·미리보기는 내 글에서만 찾는다.
     val reply = remember(m.text, agent, m.attachment) { if (!agent && !m.attachment) ReplyQuote.parse(m.text) else null }
@@ -1935,24 +1946,41 @@ private fun MessageRow(
             }
         }
         // 서식 글 말풍선은 조금 더 넓게(웹 `.bubble:has(.body.md)` 의 88% 와 같은 값) — 표·코드 블록이 한 열이라도 더 보이게.
-        val bubbleModifier = Modifier
+        // 너비 상한·정렬은 바깥 상자(`bubbleSlot`)가 쥔다 — 메뉴가 말풍선 자리(빈 여백 말고)에 붙고, 꾹 누르기도 말풍선 위에서만 받게.
+        val bubbleSlot = Modifier
             .fillMaxWidth(if (markdown != null) 0.88f else 0.82f)
             .wrapContentWidth(if (m.mine) Alignment.End else Alignment.Start)
+        val longPress = if (copyText != null) {
+            Modifier.messageLongPress(Strings.messageMenuHint) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                menuOpen = true
+            }
+        } else Modifier
+        val bubbleModifier = Modifier
             .clip(shape)
             .then(fill)
+            .then(longPress)
             .then(if (onAttachment != null) Modifier.clickable(enabled = !opening, role = Role.Button, onClick = onAttachment) else Modifier)
             .padding(horizontal = 14.dp, vertical = 11.dp)
         val textColor = if (m.mine) colors.onEmber else colors.ink
         val bubble: @Composable () -> Unit = {
-            if (markdown != null) {
-                AgentMarkdownBody(markdown, bubbleModifier, textColor)
-            } else if (reply == null) {
-                Text(body, bubbleModifier, color = textColor, style = MaterialTheme.typography.bodyLarge)
-            } else {
-                Column(bubbleModifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    val openQuote: (() -> Unit)? = reply.seq?.let { seq -> onReplyQuote?.let { jump -> { jump(seq) } } }
-                    ReplyQuoteBox(reply, tint = if (m.mine) colors.onEmber.copy(alpha = 0.8f) else colors.inkDim, onOpen = openQuote)
-                    Text(body, color = textColor, style = MaterialTheme.typography.bodyLarge)
+            Box(bubbleSlot) {
+                if (markdown != null) {
+                    AgentMarkdownBody(markdown, bubbleModifier, textColor)
+                } else if (reply == null) {
+                    Text(body, bubbleModifier, color = textColor, style = MaterialTheme.typography.bodyLarge)
+                } else {
+                    Column(bubbleModifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        val openQuote: (() -> Unit)? = reply.seq?.let { seq -> onReplyQuote?.let { jump -> { jump(seq) } } }
+                        ReplyQuoteBox(reply, tint = if (m.mine) colors.onEmber.copy(alpha = 0.8f) else colors.inkDim, onOpen = openQuote)
+                        Text(body, color = textColor, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+                if (copyText != null) {
+                    MessageMenu(
+                        menuOpen, onDismiss = { menuOpen = false }, text = copyText, onReply = onReply,
+                        onSelectCopy = { text -> onSelectCopy?.invoke(text) },
+                    )
                 }
             }
         }
