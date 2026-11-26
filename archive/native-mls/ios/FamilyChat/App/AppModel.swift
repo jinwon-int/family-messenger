@@ -1875,28 +1875,76 @@ final class AppModel: ObservableObject {
         case failed(String)
     }
 
+    /// 단축어 송신 결과 + 릴레이가 준 내 글의 seq(답 기다리기의 기준). seq 는 `.sent` 이고 릴레이 확인을 받았을 때만 있다
+    /// (이미 받은 글로 정리된 `.reconciled` 는 seq 를 모른다 — 그때는 답을 기다리지 않는다).
+    struct ShortcutReceipt: Equatable {
+        let result: ShortcutSendResult
+        var seq: Int64? = nil
+    }
+
     /// 단축어(App Intent, `openAppWhenRun`)가 부르는 송신: 앱 프로세스의 **같은 모델**로만 보낸다 — 새 작성자(확장)를 만들지 않아
     /// flock·`serial`·내 글 기록(`unconfirmed`→`recordOwn`)이 화면 송신과 똑같다. 앱이 막 떠서 아직 준비 전이면 시작과 한 바퀴
     /// 동기화를 기다린다. 보낸 뒤 그 방을 열어 달라고 적는다(답이 그 방으로 온다).
     func sendFromShortcut(room: RoomID, text: String) async -> ShortcutSendResult {
+        await shortcutSend(room: room, text: text).result
+    }
+
+    /// `sendFromShortcut` 의 본체 — 「에이전트에게 묻기」(AskAgentIntent)는 돌려받은 seq 이후의 에이전트 답을 기다린다.
+    func shortcutSend(room: RoomID, text: String) async -> ShortcutReceipt {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !body.isEmpty else { return .failed(Strings.shortcutEmpty) }
+        guard !body.isEmpty else { return ShortcutReceipt(result: .failed(Strings.shortcutEmpty)) }
         await bootstrap()
         // #836: 저장분으로 먼저 연 화면(`awaitingFirstRound`)도 종전처럼 첫 바퀴를 먼저 돈다 — 이 송신이 첫 동기화를 앞지르지 않게.
         if phase != .ready || awaitingFirstRound { await refresh() }
-        guard case .ready = phase else { return .failed(Strings.notReady) }
-        guard rooms.contains(where: { $0.room == room }) else { return .failed(Strings.shortcutUnknownRoom(room)) }
+        guard case .ready = phase else { return ShortcutReceipt(result: .failed(Strings.notReady)) }
+        guard rooms.contains(where: { $0.room == room }) else { return ShortcutReceipt(result: .failed(Strings.shortcutUnknownRoom(room))) }
         let outcome = await send(room: room, text: body)
         requestOpen(room: room)
         switch outcome {
-        case .sent?, .reconciled?: return .sent
-        case .queued?: return .queued
+        case .sent(_, let seq, _)?: return ShortcutReceipt(result: .sent, seq: seq)
+        case .reconciled?: return ShortcutReceipt(result: .sent)
+        case .queued?: return ShortcutReceipt(result: .queued)
         case nil:
             switch outgoing[room]?.last?.state {
-            case .queued?: return .queued
-            case .failed(let reason)?: return .failed(reason)
-            default: return .failed(Strings.outgoingFailed)
+            case .queued?: return ShortcutReceipt(result: .queued)
+            case .failed(let reason)?: return ShortcutReceipt(result: .failed(reason))
+            default: return ShortcutReceipt(result: .failed(Strings.outgoingFailed))
             }
+        }
+    }
+
+    /// 「에이전트에게 묻기」가 답을 찾는 범위(내 글 seq 뒤 몇 건까지 볼지).
+    static let replyScanLimit = 50
+    /// 답 기다리기의 확인 간격(초). 앱이 전경이라 `runForeground`(watch)가 글을 저장소에 넣는다 — 여기서는 저장소만 본다(네트워크 없음).
+    static let replyPollStep: TimeInterval = 0.5
+
+    /// 방 `room` 에서 seq `after` 뒤에 온 **첫 에이전트 글**(text, 빈 글 제외). 없으면 nil. 저장소만 읽는다.
+    func agentReply(room: RoomID, after seq: Int64) -> String? {
+        guard !suspended else { return nil }   // #701: 백그라운드에서는 DB 를 열지 않는다
+        let records = (try? deps.messageStore.messages(room: room, after: seq, limit: Self.replyScanLimit)) ?? []
+        return records.first { record in
+            record.kind == .text && deps.agentRoster.isAgent(record)
+                && !record.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }?.body
+    }
+
+    /// 내 글(seq `after`) 뒤의 에이전트 답을 최대 `timeout` 초 기다린다. 시간 안에 오지 않으면 nil — 다시 보내지 않는다(중복 질문 방지).
+    func awaitAgentReply(room: RoomID, after seq: Int64, timeout: TimeInterval) async -> String? {
+        await Self.waitForReply(timeout: timeout, step: Self.replyPollStep, now: deps.uptime,
+                                sleep: { seconds in _ = try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) },
+                                poll: { self.agentReply(room: room, after: seq) })
+    }
+
+    /// 기다리기 순수 루프(시계·잠자기·확인을 주입 — 시험은 가짜 시계로 시간 초과 경로를 바로 돈다). 먼저 한 번 보고, 마감 전까지
+    /// `step`(남은 시간보다 길면 남은 시간)씩 자고 다시 본다. 취소되면 마지막으로 한 번 보고 끝낸다.
+    static func waitForReply(timeout: TimeInterval, step: TimeInterval, now: () -> TimeInterval,
+                             sleep: (TimeInterval) async -> Void, poll: () -> String?) async -> String? {
+        let deadline = now() + max(timeout, 0)
+        while true {
+            if let reply = poll() { return reply }
+            let left = deadline - now()
+            if left <= 0 || Task.isCancelled { return nil }
+            await sleep(min(max(step, 0.01), left))
         }
     }
 

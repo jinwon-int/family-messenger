@@ -1,0 +1,7 @@
+/* App Shortcuts 문구(한국어) — Intents/AskAgentIntent.swift `HandeAppShortcuts` 의 phrases 와 키가 같아야 한다.
+   ${applicationName} = 앱 이름(한데). 프로젝트 개발 언어와 무관하게 한국어 Siri·Spotlight 가 이 문구를 읽는다. */
+"${applicationName}에서 공명에게 묻기" = "${applicationName}에서 공명에게 묻기";
+"${applicationName}에서 공명에게 물어보기" = "${applicationName}에서 공명에게 물어보기";
+"${applicationName}에서 에이전트에게 묻기" = "${applicationName}에서 에이전트에게 묻기";
+"${applicationName}에서 공명에게 기록 맡기기" = "${applicationName}에서 공명에게 기록 맡기기";
+"${applicationName}에서 공명에게 기록하기" = "${applicationName}에서 공명에게 기록하기";
