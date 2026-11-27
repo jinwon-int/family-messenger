@@ -76,6 +76,11 @@ class Settings(context: Context, private val sealer: KeystoreSealer) : RoomOrder
         get() = prefs.getString("sibling_rescan", null)?.takeIf { it.isNotEmpty() }
         set(value) { if (value.isNullOrEmpty()) prefs.edit().remove("sibling_rescan").apply() else prefs.edit().putString("sibling_rescan", value).apply() }
 
+    /** 멈춘 참여 복구 기록(#875, `SiblingRepair.encodeState` 형식 — 줄마다 `target|room|atMs`, 공개 값만). */
+    var siblingRepairState: String?
+        get() = prefs.getString("sibling_repair", null)?.takeIf { it.isNotEmpty() }
+        set(value) { if (value.isNullOrEmpty()) prefs.edit().remove("sibling_repair").apply() else prefs.edit().putString("sibling_repair", value).apply() }
+
     /** 설정 「빠진 방 다시 찾기」 끄기(#616, 기본 켜짐 = false — 켜면 키를 지운다). */
     var siblingRescanOff: Boolean
         get() = prefs.getBoolean("sibling_rescan_off", false)

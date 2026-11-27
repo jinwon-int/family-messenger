@@ -1,12 +1,15 @@
 {
-  "about": "#366 slice 3h-a: sibling-invite queue + missing-room rescan (#616). host-core `sibling_queue`, ios-ffi, Android `core/SelfService`+`SiblingRescan` and (rules only) web `hande/self-service.js` run this file. Times are ms. Queue entries: {target, rooms, since, progress, recheck_at, origin} (null = absent). `budget.expect` null = no limit. `*_text` sections are the Android SharedPreferences text format (web stores JSON and skips them).",
+  "about": "#366 slice 3h-a: sibling-invite queue + missing-room rescan (#616). host-core `sibling_queue`, ios-ffi, Android `core/SelfService`+`SiblingRescan` and (rules only) web `hande/self-service.js` run this file. Times are ms. Queue entries: {target, rooms, since, progress, recheck_at, origin} (null = absent). `budget.expect` null = no limit. `*_text` sections are the Android SharedPreferences text format (web stores JSON and skips them). #875 (3h-b 1차) adds repair_* sections: a registrar device removes and re-invites a sibling that is on a room's roster but left that room's Welcome unconsumed for 30 min+ (case A), once per (sibling, room) per 24 h.",
   "version": 1,
   "constants": {
     "rescan_interval_ms": 21600000,
     "rescan_deferral_ms": 1800000,
     "rescan_origin": "rescan",
     "sibling_lobby_recheck_ms": 60000,
-    "sibling_invite_ttl_ms": 86400000
+    "sibling_invite_ttl_ms": 86400000,
+    "repair_min_age_ms": 1800000,
+    "repair_interval_ms": 86400000,
+    "repair_origin": "repair"
   },
   "mes": {
     "pair": {
@@ -1247,6 +1250,421 @@
         ]
       },
       "expect": "\na|b|1"
+    }
+  ],
+  "repair_allowed": [
+    {
+      "name": "active registrar",
+      "me": "pair",
+      "device": "phone-b",
+      "expect": true
+    },
+    {
+      "name": "active non-registrar",
+      "me": "pair",
+      "device": "web-a",
+      "expect": false
+    },
+    {
+      "name": "revoked record",
+      "me": "revoked_self",
+      "device": "phone-b",
+      "expect": false
+    },
+    {
+      "name": "not on the chain",
+      "me": "pair",
+      "device": "ghost",
+      "expect": false
+    },
+    {
+      "name": "no /v2/me",
+      "me": null,
+      "device": "phone-b",
+      "expect": false
+    }
+  ],
+  "stuck_rooms": [
+    {
+      "name": "on the roster, Welcome 30 min+ old: stuck",
+      "target": "web-a",
+      "now": 10000000,
+      "rooms": [
+        {
+          "room": "r1",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "web-a"
+          ]
+        }
+      ],
+      "welcomes": [
+        {
+          "room": "r1",
+          "created_at_ms": 8200000
+        }
+      ],
+      "state": {
+        "marks": []
+      },
+      "expect": [
+        "r1"
+      ]
+    },
+    {
+      "name": "Welcome younger than 30 min: not yet",
+      "target": "web-a",
+      "now": 10000000,
+      "rooms": [
+        {
+          "room": "r1",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "web-a"
+          ]
+        }
+      ],
+      "welcomes": [
+        {
+          "room": "r1",
+          "created_at_ms": 8200001
+        }
+      ],
+      "state": {
+        "marks": []
+      },
+      "expect": []
+    },
+    {
+      "name": "target not on the roster (rescan's job), unknown roster, room not here: skipped",
+      "target": "web-a",
+      "now": 10000000,
+      "rooms": [
+        {
+          "room": "r1",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b"
+          ]
+        },
+        {
+          "room": "r2",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": null
+        }
+      ],
+      "welcomes": [
+        {
+          "room": "r1",
+          "created_at_ms": 1
+        },
+        {
+          "room": "r2",
+          "created_at_ms": 1
+        },
+        {
+          "room": "r9",
+          "created_at_ms": 1
+        }
+      ],
+      "state": {
+        "marks": []
+      },
+      "expect": []
+    },
+    {
+      "name": "not joined, halted, my commit pending: skipped",
+      "target": "web-a",
+      "now": 10000000,
+      "rooms": [
+        {
+          "room": "r1",
+          "joined": false,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "web-a"
+          ]
+        },
+        {
+          "room": "r2",
+          "joined": true,
+          "halted": true,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "web-a"
+          ]
+        },
+        {
+          "room": "r3",
+          "joined": true,
+          "halted": false,
+          "pending": true,
+          "roster": [
+            "phone-b",
+            "web-a"
+          ]
+        },
+        {
+          "room": "r4",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "web-a"
+          ]
+        }
+      ],
+      "welcomes": [
+        {
+          "room": "r1",
+          "created_at_ms": 1
+        },
+        {
+          "room": "r2",
+          "created_at_ms": 1
+        },
+        {
+          "room": "r3",
+          "created_at_ms": 1
+        },
+        {
+          "room": "r4",
+          "created_at_ms": 1
+        }
+      ],
+      "state": {
+        "marks": []
+      },
+      "expect": [
+        "r4"
+      ]
+    },
+    {
+      "name": "repaired within 24 h: skipped; 24 h boundary: again; other target's mark ignored; duplicate Welcome once",
+      "target": "web-a",
+      "now": 10000000,
+      "rooms": [
+        {
+          "room": "r1",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "web-a"
+          ]
+        },
+        {
+          "room": "r2",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "web-a"
+          ]
+        },
+        {
+          "room": "r3",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "web-a"
+          ]
+        }
+      ],
+      "welcomes": [
+        {
+          "room": "r1",
+          "created_at_ms": 1
+        },
+        {
+          "room": "r2",
+          "created_at_ms": 1
+        },
+        {
+          "room": "r2",
+          "created_at_ms": 2
+        },
+        {
+          "room": "r3",
+          "created_at_ms": 1
+        }
+      ],
+      "state": {
+        "marks": [
+          {
+            "key": "web-a|r1",
+            "at": -76399999
+          },
+          {
+            "key": "web-a|r2",
+            "at": -76400000
+          },
+          {
+            "key": "tab-e|r3",
+            "at": 10000000
+          }
+        ]
+      },
+      "expect": [
+        "r2",
+        "r3"
+      ]
+    }
+  ],
+  "repair_mark": [
+    {
+      "name": "new mark appended",
+      "state": {
+        "marks": [
+          {
+            "key": "tab-e|r1",
+            "at": 5000
+          }
+        ]
+      },
+      "target": "web-a",
+      "room": "r2",
+      "now": 6000,
+      "expect": {
+        "marks": [
+          {
+            "key": "tab-e|r1",
+            "at": 5000
+          },
+          {
+            "key": "web-a|r2",
+            "at": 6000
+          }
+        ]
+      }
+    },
+    {
+      "name": "same key replaced in place",
+      "state": {
+        "marks": [
+          {
+            "key": "web-a|r2",
+            "at": 10
+          },
+          {
+            "key": "tab-e|r1",
+            "at": 5000
+          }
+        ]
+      },
+      "target": "web-a",
+      "room": "r2",
+      "now": 6000,
+      "expect": {
+        "marks": [
+          {
+            "key": "web-a|r2",
+            "at": 6000
+          },
+          {
+            "key": "tab-e|r1",
+            "at": 5000
+          }
+        ]
+      }
+    },
+    {
+      "name": "marks 24 h+ old pruned",
+      "state": {
+        "marks": [
+          {
+            "key": "old|r1",
+            "at": 1000
+          },
+          {
+            "key": "keep|r1",
+            "at": 1001
+          }
+        ]
+      },
+      "target": "web-a",
+      "room": "r2",
+      "now": 86401000,
+      "expect": {
+        "marks": [
+          {
+            "key": "keep|r1",
+            "at": 1001
+          },
+          {
+            "key": "web-a|r2",
+            "at": 86401000
+          }
+        ]
+      }
+    }
+  ],
+  "repair_state_text_decode": [
+    {
+      "name": "absent",
+      "text": null,
+      "expect": {
+        "marks": []
+      }
+    },
+    {
+      "name": "lines; bad lines dropped; repeated key keeps first position, later value",
+      "text": "web-a|r1|50\nbad id!|r1|5\nweb-a|r2|x\ntab-e|r3|7\nweb-a|r1|60\n",
+      "expect": {
+        "marks": [
+          {
+            "key": "web-a|r1",
+            "at": 60
+          },
+          {
+            "key": "tab-e|r3",
+            "at": 7
+          }
+        ]
+      }
+    }
+  ],
+  "repair_state_text_encode": [
+    {
+      "name": "empty",
+      "state": {
+        "marks": []
+      },
+      "expect": ""
+    },
+    {
+      "name": "in order",
+      "state": {
+        "marks": [
+          {
+            "key": "web-a|r1",
+            "at": 60
+          },
+          {
+            "key": "tab-e|r3",
+            "at": 7
+          }
+        ]
+      },
+      "expect": "web-a|r1|60\ntab-e|r3|7"
     }
   ]
 }

@@ -3,8 +3,9 @@
 use family_mls_ios_ffi::{
     sibling_invite_budget, sibling_queue_decode, sibling_queue_encode, sibling_queue_enqueue, sibling_queue_next_entry,
     sibling_queue_split, sibling_rescan_constants, sibling_rescan_decode_state, sibling_rescan_due, sibling_rescan_encode_state,
-    sibling_rescan_siblings, sibling_rescan_turn, MlsMe, MlsMeDevice, MlsRescanExcluded, MlsRescanPending, MlsRescanRoom,
-    MlsRescanState, MlsSiblingInvite,
+    sibling_repair_allowed, sibling_repair_constants, sibling_repair_decode_state, sibling_repair_encode_state, sibling_repair_mark,
+    sibling_repair_stuck_rooms, sibling_rescan_siblings, sibling_rescan_turn, MlsInviteRoom, MlsMe, MlsMeDevice, MlsRepairMark,
+    MlsRepairState, MlsRescanExcluded, MlsRescanPending, MlsRescanRoom, MlsRescanState, MlsSiblingInvite, MlsSiblingWelcome,
 };
 use serde_json::{json, Value};
 
@@ -158,5 +159,57 @@ fn rescan_rules_and_text() {
     }
     for c in cases(&v, "rescan_state_text_encode") {
         assert_eq!(sibling_rescan_encode_state(state(&c["state"])), s(&c["expect"]), "{}", c["name"]);
+    }
+}
+
+fn repair_state(v: &Value) -> MlsRepairState {
+    MlsRepairState { marks: v["marks"].as_array().unwrap().iter().map(|m| MlsRepairMark { key: s(&m["key"]), at: m["at"].as_i64().unwrap() }).collect() }
+}
+
+fn repair_json(st: &MlsRepairState) -> Value {
+    json!({"marks": st.marks.iter().map(|m| json!({"key": m.key, "at": m.at})).collect::<Vec<_>>()})
+}
+
+#[test]
+fn repair_rules_and_text() {
+    let v = vectors();
+    let c = sibling_repair_constants();
+    assert_eq!(v["constants"]["repair_min_age_ms"], c.min_age_ms);
+    assert_eq!(v["constants"]["repair_interval_ms"], c.interval_ms);
+    assert_eq!(v["constants"]["repair_origin"], c.origin);
+    for c in cases(&v, "repair_allowed") {
+        assert_eq!(sibling_repair_allowed(me(&v, c), s(&c["device"])), c["expect"], "{}", c["name"]);
+    }
+    for c in cases(&v, "stuck_rooms") {
+        let rooms = c["rooms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| MlsInviteRoom {
+                room: s(&r["room"]),
+                joined: r["joined"].as_bool().unwrap(),
+                halted: r["halted"].as_bool().unwrap(),
+                pending: r["pending"].as_bool().unwrap(),
+                roster: r["roster"].as_array().map(|_| strings(&r["roster"])),
+            })
+            .collect();
+        let welcomes = c["welcomes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| MlsSiblingWelcome { room: s(&w["room"]), created_at_ms: w["created_at_ms"].as_i64().unwrap() })
+            .collect();
+        let got = sibling_repair_stuck_rooms(rooms, s(&c["target"]), welcomes, repair_state(&c["state"]), c["now"].as_i64().unwrap());
+        assert_eq!(got, strings(&c["expect"]), "{}", c["name"]);
+    }
+    for c in cases(&v, "repair_mark") {
+        let got = sibling_repair_mark(repair_state(&c["state"]), s(&c["target"]), s(&c["room"]), c["now"].as_i64().unwrap());
+        assert_eq!(repair_json(&got), c["expect"], "{}", c["name"]);
+    }
+    for c in cases(&v, "repair_state_text_decode") {
+        assert_eq!(repair_json(&sibling_repair_decode_state(c["text"].as_str().map(str::to_owned))), c["expect"], "{}", c["name"]);
+    }
+    for c in cases(&v, "repair_state_text_encode") {
+        assert_eq!(sibling_repair_encode_state(repair_state(&c["state"])), s(&c["expect"]), "{}", c["name"]);
     }
 }

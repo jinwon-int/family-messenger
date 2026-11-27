@@ -71,6 +71,8 @@ object Strings {
     fun siblingGaveUp(target: String, rooms: List<String>) =
         "$target 를 ${rooms.joinToString(", ")} 대화방에 초대하지 못했습니다(하루 동안 그 기기의 로비 키가 없음). 그 기기에서 앱을 열어 두면 「빠진 방 다시 찾기」가 다시 초대합니다."
     /** #616: 빠진 방 재탐색으로 내 다른 기기를 다시 넣었다. */
+    /** #875: 명단에는 있는데 30분 넘게 들어오지 못한 내 기기를 그 방에서 내보내고 다시 초대한다(방마다 하루 한 번). */
+    fun siblingRepaired(target: String, room: String) = "$target 가 $room 에 들어오지 못해 내보내고 다시 초대합니다."
     fun siblingRescanned(devices: Int, rooms: Int) = "내 다른 기기 ${devices}대를 대화방 ${rooms}개에 다시 넣었습니다."
     /** #616 설정 「기기 관리」 토글(iOS `siblingRescanTitle`·`siblingRescanHint` 와 같은 문구). */
     const val siblingRescanTitle = "빠진 방 다시 찾기"

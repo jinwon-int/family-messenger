@@ -16,7 +16,10 @@ import com.seoyoon_family.hande.mls.MlsCandidate
 import com.seoyoon_family.hande.mls.MlsEnrollMode
 import com.seoyoon_family.hande.mls.MlsInviteRoom
 import com.seoyoon_family.hande.mls.MlsMe
+import com.seoyoon_family.hande.mls.MlsLobbyWelcome
 import com.seoyoon_family.hande.mls.MlsMeDevice
+import com.seoyoon_family.hande.mls.MlsRepairState
+import com.seoyoon_family.hande.mls.MlsSiblingWelcome
 import com.seoyoon_family.hande.mls.MlsRescanExcluded
 import com.seoyoon_family.hande.mls.MlsRescanPending
 import com.seoyoon_family.hande.mls.MlsRescanRoom
@@ -38,6 +41,11 @@ import com.seoyoon_family.hande.mls.siblingQueueEncode
 import com.seoyoon_family.hande.mls.siblingQueueEnqueue
 import com.seoyoon_family.hande.mls.siblingQueueNextEntry
 import com.seoyoon_family.hande.mls.siblingQueueSplit
+import com.seoyoon_family.hande.mls.siblingRepairAllowed
+import com.seoyoon_family.hande.mls.siblingRepairDecodeState
+import com.seoyoon_family.hande.mls.siblingRepairEncodeState
+import com.seoyoon_family.hande.mls.siblingRepairMark
+import com.seoyoon_family.hande.mls.siblingRepairStuckRooms
 import com.seoyoon_family.hande.mls.siblingRescanDecodeState
 import com.seoyoon_family.hande.mls.siblingRescanDue
 import com.seoyoon_family.hande.mls.siblingRescanEncodeState
@@ -390,4 +398,37 @@ object SiblingRescan {
         )
         return Turn(t.ready, t.enqueue.map { it.target to it.rooms }, t.state.toApp())
     }
+}
+
+/**
+ * #875(#366 3h-b 1차) 멈춘 참여 복구 — 경우 A 판정은 host-core `sibling_queue`(공용 벡터 `sibling-queue-vectors.json` 의 `repair_*`·
+ * `stuck_rooms`, `SiblingQueueVectorsTest`). 형제 기기가 방의 명단에는 있는데 그 방의 Welcome 을 30분 넘게 소비하지 못했으면, 등록 기기가
+ * 그 방에서 내보내고 다시 초대한다(방마다 하루 한 번). 조회·내보내기·초대는 [DeviceHub] 가 한다.
+ */
+object SiblingRepair {
+    /** Welcome 이 이만큼 남아 있어야 멈춤으로 본다. */
+    const val MIN_AGE_MS = 30 * 60_000L
+    /** 같은 (형제 기기, 방) 재복구까지. */
+    const val INTERVAL_MS = 24 * 60 * 60_000L
+    /** 대기열 항목 출처 표시(포기·실패는 알린다). */
+    const val ORIGIN = "repair"
+
+    /** 이 기기가 복구를 해도 되나 — 체인의 내 기록이 활성 · registrar. */
+    fun allowed(me: MlsMe?, device: String): Boolean = siblingRepairAllowed(me, device)
+
+    /** 내보내고 다시 초대할 방(Welcome 순서). `welcomes` = `MlsLobby.welcomesFor(target)`(릴레이 `created_at` 은 초). */
+    fun stuckRooms(rooms: List<SelfService.RoomView>, target: String, welcomes: List<MlsLobbyWelcome>, state: MlsRepairState, now: Long): List<String> =
+        stuckRoomsMs(rooms, target, welcomes.map { MlsSiblingWelcome(room = it.room, createdAtMs = it.createdAt * 1000L) }, state, now)
+
+    /** [stuckRooms] 의 ms 입력판(공용 벡터가 이것으로 돈다). */
+    fun stuckRoomsMs(rooms: List<SelfService.RoomView>, target: String, welcomes: List<MlsSiblingWelcome>, state: MlsRepairState, now: Long): List<String> =
+        siblingRepairStuckRooms(rooms.map { MlsInviteRoom(it.room, it.joined, it.halted, it.pending, it.roster) }, target, welcomes, state, now)
+
+    /** (target, room) 을 `now` 에 복구했다고 적는다(하루 지난 기록은 걷어 낸다). */
+    fun mark(state: MlsRepairState, target: String, room: String, now: Long): MlsRepairState = siblingRepairMark(state, target, room, now)
+
+    /** 저장 형식(SharedPreferences `sibling_repair`): 줄마다 `target|room|atMs`. */
+    fun decodeState(text: String?): MlsRepairState = siblingRepairDecodeState(text)
+
+    fun encodeState(state: MlsRepairState): String = siblingRepairEncodeState(state)
 }

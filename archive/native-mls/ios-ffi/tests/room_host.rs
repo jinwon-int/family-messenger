@@ -447,3 +447,44 @@ fn pending_welcome_survives_a_restart_and_is_posted_after_the_echo() {
     ok(band.replenish(1), "band publishes again (the ghost consumed one)");
     assert!(matches!(ok(ghost.invite("owner-band".into()), "invite after the drop"), MlsInvite::Invited { .. }));
 }
+
+/// #875 멈춘 참여 복구의 첫 절반: `remove(target)` 이 명단에서 대상의 키를 찾아 `remove_pending` commit 을 올리고(커밋 뒤 멤버
+/// 목록에서 대상이 빠짐, #900) 자기 echo 를 merge 한다(봇 steward `remove` 와 같은 순서). 다른 멤버는 그 commit 을 적용한다.
+#[test]
+fn remove_posts_a_commit_without_the_target_and_merges_its_echo() {
+    let h = Harness::new();
+    let ((owner, owner_obs), (peer, peer_obs)) = founded_pair(&h);
+    ok(peer.poll(), "peer joins");
+
+    // 자기 자신·명단에 없는 기기·식별자 위반.
+    assert!(matches!(owner.remove("owner-phone".into()).expect_err("self"), RoomError::Host { .. }));
+    assert_eq!(ok(owner.remove("owner-ghost".into()), "not a member"), family_mls_ios_ffi::MlsRemove::NotMember);
+    assert!(matches!(owner.remove("bad target".into()).expect_err("identifier"), RoomError::Host { .. }));
+
+    // 방이 먼저 움직였으면(409) 대기 commit 을 버리고 Raced — 다음 poll 뒤 다시.
+    h.relay.bump_epoch("room-a");
+    assert_eq!(ok(owner.remove("owner-pc".into()), "remove into a moved room"), family_mls_ios_ffi::MlsRemove::Raced);
+    ok(owner.poll(), "catch up");
+
+    let removed = ok(owner.remove("owner-pc".into()), "remove");
+    let family_mls_ios_ffi::MlsRemove::Removed { commit_seq, epoch } = removed else { panic!("{removed:?}") };
+    let rows = h.relay.rows("room-a");
+    let row = rows.iter().find(|r| r.seq == commit_seq).expect("commit row");
+    assert_eq!(row.kind, "commit");
+    assert_eq!(row.members, vec![("owner-phone".to_string(), "owner".to_string())], "post-commit roster without the target");
+    assert!(owner_obs.events().iter().any(|e| matches!(e, RoomEvent::OwnCommitMerged { seq, epoch: ep } if *seq == commit_seq && *ep == epoch)), "{:?}", owner_obs.events());
+    // persist-before-bytes-leave: the pending-commit state hit the store before the commit POST.
+    let trace = h.trace();
+    let post = trace.iter().rposition(|l| l.starts_with("POST commit owner-phone-")).expect("commit post");
+    assert!(trace[..post].iter().any(|l| l.starts_with("persist owner-phone")), "{trace:?}");
+
+    // 다른 멤버는 그 commit 을 적용한다(자기가 빠진 commit).
+    ok(peer.poll(), "peer reads its removal");
+    assert!(
+        peer_obs.events().iter().any(|e| matches!(e, RoomEvent::CommitApplied { removes, .. } if removes == &["owner-pc".to_string()])),
+        "{:?}",
+        peer_obs.events()
+    );
+    // 이미 빠진 기기를 다시 내보내면 NotMember.
+    assert_eq!(ok(owner.remove("owner-pc".into()), "again"), family_mls_ios_ffi::MlsRemove::NotMember);
+}

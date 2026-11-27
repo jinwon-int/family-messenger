@@ -341,6 +341,107 @@ pub fn rescan_turn<'a>(
     RescanTurn { ready: true, enqueue, state: RescanState { last: Some(now), pending } }
 }
 
+// ---- #875 (#366 3h-b 1차): 명단에는 있는데 참여하지 못한 형제 기기 — 경우 A(Welcome 미소비) ----
+//
+// 형제 기기가 방의 MLS 명단에는 있는데 그 방의 Welcome 을 30분 넘게 소비하지 못했으면(릴레이
+// `GET /v2/lobby/welcomes?device=<형제>` 에 남아 있음 — 그 기기의 durable cursor 가 Welcome 앞) 등록 기기가 그 기기를
+// 방에서 내보내고(`MlsRoom.remove`) 다시 초대한다(대기열, origin [`REPAIR_ORIGIN`]). 방마다 [`REPAIR_INTERVAL_MS`] 에 한 번.
+// 경우 B(Welcome 은 지나갔는데 참여 실패)는 이 API 로 보이지 않아 다루지 않는다(#875 issuecomment-7211160751).
+
+/// Welcome 이 이만큼 소비되지 않은 채 남아 있어야 멈춤으로 본다(재탐색 미룸과 같은 30분).
+pub const REPAIR_MIN_AGE_MS: i64 = RESCAN_DEFERRAL_MS;
+/// 같은 (형제 기기, 방)을 다시 복구하기까지 최소 간격.
+pub const REPAIR_INTERVAL_MS: i64 = 24 * 60 * 60_000;
+/// 복구가 넣은 대기열 항목의 출처 표시(포기·실패하면 알린다 — 재탐색과 달리 조용히 넘기지 않는다).
+pub const REPAIR_ORIGIN: &str = "repair";
+
+/// 형제 기기를 대상으로 남아 있는 Welcome 한 건(`created_at_ms` = 릴레이 `created_at` 초 × 1000).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiblingWelcome {
+    pub room: String,
+    pub created_at_ms: i64,
+}
+
+/// 복구 기록 한 건: `key` = `target|room`, `at` = 그 방에서 그 기기를 마지막으로 내보낸 시각(ms).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepairMark {
+    pub key: String,
+    pub at: i64,
+}
+
+/// 복구 기록(넣은 순서).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepairState {
+    pub marks: Vec<RepairMark>,
+}
+
+/// 이 기기가 복구를 해도 되나 — 체인에 내 기록이 있고 활성이며 등록 기기(registrar)일 때만(오너 결정, #875).
+pub fn may_repair(me: Option<&MeInfo>, device: &str) -> bool {
+    me.and_then(|m| m.devices.iter().find(|d| d.device_id == device))
+        .is_some_and(|d| is_active(d) && crate::self_service::is_registrar(d))
+}
+
+/// 형제 기기 `target` 을 내보내고 다시 초대할 방(Welcome 순서, 방마다 한 번): 내가 참여했고 · 정지가 아니고 · 내 commit 이
+/// 대기 중이 아니고 · 대상이 그 방의 명단에 있고 · 그 Welcome 이 [`REPAIR_MIN_AGE_MS`] 넘게 남았고 · 그 (대상, 방)의 마지막
+/// 복구에서 [`REPAIR_INTERVAL_MS`] 가 지났다.
+pub fn stuck_sibling_rooms(rooms: &[InviteRoom], target: &str, welcomes: &[SiblingWelcome], state: &RepairState, now: i64) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in welcomes {
+        if out.contains(&w.room) {
+            continue;
+        }
+        let Some(view) = rooms.iter().find(|r| r.room == w.room) else { continue };
+        if !view.joined || view.halted || view.pending {
+            continue;
+        }
+        if !view.roster.as_ref().is_some_and(|r| r.iter().any(|m| m == target)) {
+            continue;
+        }
+        if now - w.created_at_ms < REPAIR_MIN_AGE_MS {
+            continue;
+        }
+        let key = format!("{target}|{}", w.room);
+        if state.marks.iter().any(|m| m.key == key && now - m.at < REPAIR_INTERVAL_MS) {
+            continue;
+        }
+        out.push(w.room.clone());
+    }
+    out
+}
+
+/// (target, room) 을 `now` 에 복구했다고 적는다 — [`REPAIR_INTERVAL_MS`] 가 지난 기록은 걷어 내고, 같은 키는 제자리에서 바꾼다.
+pub fn mark_repaired(state: &RepairState, target: &str, room: &str, now: i64) -> RepairState {
+    let key = format!("{target}|{room}");
+    let mut marks: Vec<RepairMark> = state.marks.iter().filter(|m| m.key == key || now - m.at < REPAIR_INTERVAL_MS).cloned().collect();
+    match marks.iter_mut().find(|m| m.key == key) {
+        Some(m) => m.at = now,
+        None => marks.push(RepairMark { key, at: now }),
+    }
+    RepairState { marks }
+}
+
+/// 텍스트 저장값 → 복구 기록: 줄마다 `target|room|atMs`(LF). 깨진 줄은 버리고, 같은 키는 첫 자리에 나중 값.
+pub fn decode_repair_state(text: Option<&str>) -> RepairState {
+    let mut marks: Vec<RepairMark> = Vec::new();
+    for line in text.unwrap_or("").split('\n') {
+        let p: Vec<&str> = line.split('|').collect();
+        if p.len() != 3 || !is_ident(p[0]) || !is_ident(p[1]) {
+            continue;
+        }
+        let Some(at) = parse_i64(p[2]) else { continue };
+        let key = format!("{}|{}", p[0], p[1]);
+        match marks.iter_mut().find(|m| m.key == key) {
+            Some(m) => m.at = at,
+            None => marks.push(RepairMark { key, at }),
+        }
+    }
+    RepairState { marks }
+}
+
+pub fn encode_repair_state(state: &RepairState) -> String {
+    state.marks.iter().map(|m| format!("{}|{}", m.key, m.at)).collect::<Vec<_>>().join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,6 +503,68 @@ mod tests {
         assert_eq!(c["rescan_origin"], RESCAN_ORIGIN);
         assert_eq!(c["sibling_lobby_recheck_ms"], SIBLING_LOBBY_RECHECK_MS);
         assert_eq!(c["sibling_invite_ttl_ms"], SIBLING_INVITE_TTL_MS);
+        assert_eq!(c["repair_min_age_ms"], REPAIR_MIN_AGE_MS);
+        assert_eq!(c["repair_interval_ms"], REPAIR_INTERVAL_MS);
+        assert_eq!(c["repair_origin"], REPAIR_ORIGIN);
+    }
+
+    fn repair_state(v: &Value) -> RepairState {
+        RepairState {
+            marks: v["marks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| RepairMark { key: m["key"].as_str().unwrap().to_owned(), at: m["at"].as_i64().unwrap() })
+                .collect(),
+        }
+    }
+
+    fn repair_json(s: &RepairState) -> Value {
+        json!({"marks": s.marks.iter().map(|m| json!({"key": m.key, "at": m.at})).collect::<Vec<_>>()})
+    }
+
+    #[test]
+    fn repair_vectors() {
+        let f = fixture();
+        for c in cases(&f, "repair_allowed") {
+            let me: Option<MeInfo> = c["me"].as_str().map(|k| serde_json::from_value(f["mes"][k].clone()).expect("me record"));
+            assert_eq!(may_repair(me.as_ref(), c["device"].as_str().unwrap()), c["expect"], "{}", c["name"]);
+        }
+        for c in cases(&f, "stuck_rooms") {
+            let rooms: Vec<InviteRoom> = c["rooms"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| InviteRoom {
+                    room: r["room"].as_str().unwrap().to_owned(),
+                    joined: r["joined"].as_bool().unwrap(),
+                    halted: r["halted"].as_bool().unwrap(),
+                    pending: r["pending"].as_bool().unwrap(),
+                    roster: serde_json::from_value(r["roster"].clone()).unwrap(),
+                })
+                .collect();
+            let welcomes: Vec<SiblingWelcome> = c["welcomes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| SiblingWelcome { room: w["room"].as_str().unwrap().to_owned(), created_at_ms: w["created_at_ms"].as_i64().unwrap() })
+                .collect();
+            let got = stuck_sibling_rooms(&rooms, c["target"].as_str().unwrap(), &welcomes, &repair_state(&c["state"]), c["now"].as_i64().unwrap());
+            assert_eq!(got, strings(&c["expect"]), "{}", c["name"]);
+        }
+        for c in cases(&f, "repair_mark") {
+            let got = mark_repaired(&repair_state(&c["state"]), c["target"].as_str().unwrap(), c["room"].as_str().unwrap(), c["now"].as_i64().unwrap());
+            assert_eq!(repair_json(&got), c["expect"], "{}", c["name"]);
+        }
+        for c in cases(&f, "repair_state_text_decode") {
+            assert_eq!(repair_json(&decode_repair_state(c["text"].as_str())), c["expect"], "{}", c["name"]);
+        }
+        for c in cases(&f, "repair_state_text_encode") {
+            let st = repair_state(&c["state"]);
+            let text = encode_repair_state(&st);
+            assert_eq!(text, c["expect"].as_str().unwrap(), "{}", c["name"]);
+            assert_eq!(decode_repair_state(Some(&text)), st, "round trip {}", c["name"]);
+        }
     }
 
     #[test]
