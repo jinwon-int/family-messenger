@@ -48,7 +48,10 @@ class Relay:
 
     def __init__(self, binary, port, data, static, log):
         self.argv = [str(binary.resolve()), '-addr', f'127.0.0.1:{port}', '-data-dir', str(data),
-                     '-access-mode', 'disabled', '-static-dir', str(static)]
+                     '-access-mode', 'disabled', '-static-dir', str(static),
+                     # The legacy relay-app still sends file-v1 attachments (#256 retry check below);
+                     # the relay refuses new file-v1 posts from 2026-12-03 KST (#499 decision 6).
+                     '-file-v1-retire-at', 'off']
         self.base = f'http://127.0.0.1:{port}'
         self.log = log
         self.proc = None

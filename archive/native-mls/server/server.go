@@ -86,6 +86,11 @@ type policy struct {
 	// TypingTTLSeconds: how long a POST /typing signal stays visible in GET
 	// /events responses without a refresh (#562, typing.go). Memory-only.
 	TypingTTLSeconds int64
+	// FileV1RetireAtUnix: from this instant (Unix seconds) a new
+	// kind=application POST /events whose outer client_id starts with
+	// `file-v1-` is refused 410 file_v1_retired (#499 decision 6,
+	// file_v1.go). 0 = never.
+	FileV1RetireAtUnix int64
 }
 
 func defaultPolicy() policy {
@@ -104,7 +109,8 @@ func defaultPolicy() policy {
 		DeviceBytesCap:               4 << 30, // 4 GiB per device across rooms (G-M4; raised with #364)
 		LobbyKeyPackagesMaxPerDevice: 8,       // #380 D2
 		LobbyKeyPackageTTLSeconds:    30 * day,
-		TypingTTLSeconds:             6, // #562
+		TypingTTLSeconds:             6,                     // #562
+		FileV1RetireAtUnix:           fileV1RetireAt.Unix(), // #499 decision 6
 	}
 }
 
@@ -149,6 +155,9 @@ type relay struct {
 	// preview is the link preview proxy (#683 phase 2, #690 v2, preview.go);
 	// nil = -link-preview off, routes absent (404).
 	preview *linkPreviewer
+	// now is the clock for time-gated contract rules (file_v1.go); nil =
+	// time.Now. Tests pin it.
+	now func() time.Time
 }
 
 // ---- wire types ----
@@ -942,6 +951,13 @@ func (s *relay) handlePostEvent(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	if !s.bindDevice(w, c, post.Device) {
+		return
+	}
+	// #499 decision 6 (file_v1.go): new file-v1 posts are refused before
+	// storeEvent — no room, row, CAS move, byte charge or push. Stored v1
+	// rows stay readable; a byte-equal retry of one is refused too.
+	if s.fileV1Retired(post.Kind, post.ClientID) {
+		s.fail(w, http.StatusGone, apiError{Error: "file_v1_retired", Detail: "file-v1 attachments are retired (#499); send file-v2"})
 		return
 	}
 	ev := eventInput{

@@ -5,7 +5,8 @@
 Matrix의 "Sending encrypted attachments"와 같은 구조다. 웹·iOS·안드로이드·봇은 이 문서를 정본으로 따른다.
 
 이전 형식 `file-v1`(첨부 1개 = MLS 메시지 1개, 평문 = 원본 파일 바이트, ≤ 5 MiB, `RELAY-APP.md` 「첨부」)은 v2 송신
-전환 뒤에도 수신을 유지한다(종료 시점은 #499 결정 6).
+전환 뒤에도 수신을 유지했다. **2026-12-03 00:00 KST부터 릴레이가 새 `file-v1-` 게시를 410 `file_v1_retired`로 거절한다**
+(#499 결정 6, `README.md`·`server/file_v1.go`). 이미 저장된 v1 행은 계속 내려가며, 기기에 있는 v1 첨부도 계속 보인다.
 
 ## 1. MLS 메시지
 

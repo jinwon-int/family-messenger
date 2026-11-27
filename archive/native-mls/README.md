@@ -44,6 +44,12 @@ long-poll(#424, #755 0단계, `server/wait.go`): `GET /v2/rooms/{room}/events?�
 status-v1(#560, `STATUS-V1.md`, `server/status.go`): 에이전트의 작업 상태 한 줄은 바깥 `client_id` 가
 `status-<uuid>` 인 application 이벤트다 — 저장·커서·보존은 다른 이벤트와 같지만 **APNs 푸시는 보내지 않는다**
 (몇 초마다 바뀌는 임시 글; 정규형 `^status-[a-f0-9-]{36}$` 만 예외, 그 밖의 `status-…` 는 일반 글).
+file-v1 수신 중단(#499 결정 6, `server/file_v1.go`): **2026-12-03 00:00 KST부터** 바깥 `client_id` 가 `file-v1-` 로
+시작하는 **새** application 게시는 410 `file_v1_retired` 다(정규형만이 아니라 접두 전체 — 옛 host-core 는 접두만으로 첨부로
+봤다). 거절은 인증·기기 바인딩 뒤, 저장 전이라 방·행·CAS·바이트 상한·푸시에 흔적이 없다. 이미 저장된 v1 행은 GET
+/events·/watch·보존에서 그대로다. 컷오프 전에 저장된 행의 바이트 동일 재시도도 410(200 중복 아님). commit·welcome 은
+대상이 아니다. 시각은 절대 시각이라 일찍 배포해도 일찍 켜지지 않는다. `-file-v1-retire-at <RFC 3339>|off` 로 바꿀 수 있다
+(`off` 는 v1 을 아직 보내는 옛 relay-app 수락 스모크 전용).
 
 호출자 인증은 기본 **켜짐**(`-access-mode required`): 모든 계약 라우트가 CF Access JWT
 (`Cf-Access-Jwt-Assertion`, fallback `Authorization: Bearer`)를 요구하고, 요청이 행동하는 device의
