@@ -650,9 +650,27 @@ impl MlsRoom {
         host.sync().dirty = true;
         room::SendHost::persist(&mut host)?;
         let (room, epoch) = (host.inner.sync.room.clone(), host.inner.sync.epoch);
+        // #900: 정책이 켜진 릴레이(server.go M3b)는 commit 에 **커밋 뒤** 멤버 목록을 요구한다(없으면 400
+        // commit_members_required). 봇 steward·웹 `membersWire`·iOS RoomMembership 과 같은 규칙: 파사드
+        // `members_after_pending` 명단을 기기 ID 순으로, actor = 기기 ID 의 첫 `-` 앞.
+        let roster: Vec<String> = if kind == "commit" {
+            let frame = host.inner.device.members_after_pending().map_err(|_| RelayError::Local("post-commit roster unavailable"))?;
+            let mut ids: Vec<String> = native_mls_host::policy::parse_roster(&frame)
+                .ok_or(RelayError::Local("post-commit roster frame"))?
+                .into_iter()
+                .map(|m| m.id)
+                .collect();
+            ids.sort();
+            ids.dedup();
+            ids
+        } else {
+            Vec::new()
+        };
+        let members: Vec<api::MemberWire> =
+            roster.iter().map(|id| api::MemberWire { device: id, actor: id.split('-').next().unwrap_or(id) }).collect();
         let post = EventPost {
             device: identity, client_id: &client_id, kind, epoch, revision: None, group_id: &room,
-            targets, members: Vec::new(), bytes,
+            targets, members, bytes,
         };
         let resp = host.inner.client.post_event(&room, &post)?;
         Ok(PostedEvent { seq: resp.seq, epoch: resp.epoch, duplicate: resp.duplicate })

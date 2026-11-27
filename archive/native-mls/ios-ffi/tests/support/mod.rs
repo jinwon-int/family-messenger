@@ -27,6 +27,8 @@ pub struct Row {
     pub epoch: i64,
     pub bytes: Vec<u8>,
     pub targets: Vec<String>,
+    /// commit 의 바깥 멤버 목록 `(device, actor)`(#900, server.go M3b) — commit 이 아니면 빈 목록.
+    pub members: Vec<(String, String)>,
 }
 
 #[derive(Default)]
@@ -507,6 +509,18 @@ impl Relay {
         }
         let targets: Vec<String> =
             post["targets"].as_array().map(|t| t.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+        let members: Vec<(String, String)> = post["members"]
+            .as_array()
+            .map(|m| {
+                m.iter()
+                    .map(|v| (v["device"].as_str().unwrap_or_default().to_string(), v["actor"].as_str().unwrap_or_default().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // #900: 운영 릴레이(기기 정책 켜짐, server.go M3b)와 같다 — commit 은 커밋 뒤 멤버 목록을 실어야 한다.
+        if kind == "commit" && members.is_empty() {
+            return Self::respond(400, serde_json::json!({ "error": "commit_members_required" }));
+        }
         state.members.insert(device.clone());
         state.members.extend(targets.iter().cloned());
         state.next_seq += 1;
@@ -515,6 +529,7 @@ impl Relay {
             seq, device, client_id, kind: kind.clone(), epoch: state.epoch,
             bytes: b64::decode(post["bytes"].as_str().unwrap_or_default()).expect("bytes b64"),
             targets,
+            members,
         });
         if kind == "commit" {
             state.epoch += 1;
