@@ -652,3 +652,17 @@ mod tests_v2;
 mod tests_wasm32;
 
 mod trust;
+
+/// #813: this device's MLS group epoch (`None` without a group or once
+/// retired). Native hosts (bot, ios-ffi) hand it to host-core's room poll,
+/// which compares it with the relay's room epoch: a relay behind the group
+/// was restored from an older snapshot. Host-only like `export_state`, and
+/// kept out of the wasm32 build so the committed bundle hashes do not move —
+/// the web reads the same value through `Session::current_epoch`.
+#[cfg(not(target_arch = "wasm32"))]
+impl Device {
+    pub fn epoch(&self) -> Option<u64> {
+        if self.retired { return None; }
+        self.group.as_ref().map(|g| g.epoch().as_u64())
+    }
+}

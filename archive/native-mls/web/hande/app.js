@@ -239,7 +239,8 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
         // 방별 알림(mute.go): 같은 사람의 모든 기기에 한 값. null(옛 릴레이·아직 모름)이면 머리글에 버튼이 없다.
         muted: S.joined && !S.halted ? S.muted : null, onToggleMute: () => toggleMute(app.current),
         // #837: 글 보내기는 작성창을 잠그지 않는다(말풍선이 「보내는 중」을 보인다) — 잠그는 것은 첨부 전송뿐.
-        notice: null, sending: S.transferring, onRetrySend: entry => retrySend(roomId, entry),
+        // #813: 릴레이와 어긋난 방(room.js S.diverged)은 머리 아래 안내를 둔다 — 알리기만 한다.
+        notice: S.diverged ? {text: strings.room.relayDiverged, tone: 'warn'} : null, sending: S.transferring, onRetrySend: entry => retrySend(roomId, entry),
         // #766 B: 저장분으로 먼저 그린 방은 첫 sync 시도가 끝날 때까지 작성창·선택지를 잠근다(room.js S.live — 보내기 전제는 예전 그대로).
         syncing: S.joined && !S.halted && !S.live,
         // 에이전트 선택지(#620): open·answered 인 에이전트 글만. 카드의 [보내기]는 작성창과 같은 sendText 로 줄마다 `"N. 라벨"`(#624)을 보낸다
@@ -932,7 +933,7 @@ export function startApp(root, {storage = localStorage, fetch: fetchImpl = globa
   }
   /** 🔔 시트의 「진단 기록 복사」: 최근 기록 200줄 + 기기·방 상태 요약을 클립보드로 — DevTools 없이 원인 보고(#535). */
   function copyDiagnostics() {
-    const rooms = [...app.rooms.entries()].map(([id, R]) => { const S = R.session.state; return `${id}: joined=${S.joined} halted=${!!S.halted} relaySeq=${S.relaySeq} epoch=${S.epoch} pending=${S.pending}`; });
+    const rooms = [...app.rooms.entries()].map(([id, R]) => { const S = R.session.state; return `${id}: joined=${S.joined} halted=${!!S.halted} relaySeq=${S.relaySeq} epoch=${S.epoch} pending=${S.pending}` + (S.diverged ? ` diverged=${S.diverged.reason}(${S.diverged.relay_epoch}<${S.diverged.local_epoch})` : ''); });
     const invites = app.invites.map(i => `${i.room}: seq ${i.seq} ${i.failed ? `failed ${i.failed.tries}x (${i.failed.reason ?? '-'})` : i.busy ? 'busy' : 'new'}`);
     const me = app.me ? `me: subject=${app.me.subject} policy_revision=${app.me.policy_revision ?? '-'} devices=${(app.me.devices ?? []).map(d => `${d.device_id}(${d.status}${d.roles?.length ? ',' + d.roles.join('+') : ''})`).join(' ') || '-'}` : 'me: -';
     const candidates = app.candidates.map(c => `${c.device_id}: fp ${c.fingerprint.slice(0, 8)}… ${c.busy ? 'busy' : c.message ? `error ${c.message}` : 'new'}`);

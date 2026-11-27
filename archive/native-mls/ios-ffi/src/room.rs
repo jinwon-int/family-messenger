@@ -173,6 +173,16 @@ impl std::fmt::Debug for MlsFileV2Outgoing {
     }
 }
 
+/// 이 방이 릴레이와 어긋났다(#813 1단계 — host-core `RoomSync::diverged`, 봇 `room status` 의 `relay_diverged` 와 같은 값).
+/// `reason` = `epoch_regressed`(릴레이 방 epoch < 이 기기 MLS epoch — 릴레이가 오래된 스냅샷으로 돌아갔다) 또는 `not_a_member`
+/// (내 그룹은 나를 멤버로 아는데 릴레이가 403 `not_a_member`). 알리기만 한다 — 정지·복구 없음. 영속하지 않는다(다음 `poll` 이 다시 판정).
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct RelayDivergedState {
+    pub reason: String,
+    pub relay_epoch: i64,
+    pub local_epoch: i64,
+}
+
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct PostedEvent {
     pub seq: i64,
@@ -316,6 +326,7 @@ impl MlsRoom {
         let restored = RoomSync {
             room, cursor: sync.cursor, epoch: sync.epoch, joined: sync.joined, joinable: sync.joinable, dirty: false,
             acked: sync.acked, ack_sent: sync.ack_sent, ack_disabled: sync.ack_disabled, halted: sync.halted,
+            ..RoomSync::default()
         };
         // 대기 Welcome(#574 후속): 모양이 온전한 것만 이어 받는다 — 빈 Welcome·대상 없음·식별자 위반은 올릴 수 없으니 버린다.
         let pending_invite = sync
@@ -459,6 +470,15 @@ impl MlsRoom {
     pub fn sync_state(&self) -> Result<RoomSyncState, RoomError> {
         let inner = self.lock()?;
         Ok(snapshot_state(&inner))
+    }
+
+    /// 이 방이 릴레이와 어긋났는가(#813 1단계) — `None` 이면 맞다. 판정은 `poll`·`send` 가 host-core 규칙으로 한다.
+    /// 앱 화면 표시는 2단계(iOS·Android).
+    pub fn relay_diverged(&self) -> Result<Option<RelayDivergedState>, RoomError> {
+        let inner = self.lock()?;
+        Ok(inner.sync.diverged.as_ref().map(|d| RelayDivergedState {
+            reason: d.reason.as_str().to_string(), relay_epoch: d.relay_epoch, local_epoch: d.local_epoch,
+        }))
     }
 
     /// 형제 기기 초대(#574, 봇 `invite`·웹 `room.js invite` 와 같은 순서): 대상의 key package 를 방 풀 → 로비 순으로 소비 →
@@ -706,6 +726,7 @@ impl room::MlsGroup for Bound<'_> {
     fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ()> {
         encrypt_frame(self.dev, self.room, self.own, plaintext)
     }
+    fn epoch(&self) -> Option<u64> { self.dev.epoch() }
 }
 
 struct Host<'a> {

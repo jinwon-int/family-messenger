@@ -5,6 +5,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createRoomSession, parseMembers, nextDeviceId, b64} from '../room.js';
+import {strings} from '../strings.js';
 
 const utf8 = new TextEncoder();
 const frameMembers = members => {
@@ -18,8 +19,10 @@ const frameMembers = members => {
 };
 const memStorage = () => { const m = new Map(); return {getItem: k => m.has(k) ? m.get(k) : null, setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k), map: m}; };
 
-function fakeWorker({fresh = true, group = null, decrypt = () => ({sender: 'owner-pc', client: 'owner-pc'}), joinRefuses = () => false} = {}) {
-  const w = {group, calls: [], history: [], spawned: true, pendingGroup: null, acked: [], opened: [], reset: []};
+// epoch(#813): 주면 워커가 MLS epoch 를 흉내 낸다 — 결과마다 `epoch`(session-store.js 와 같은 문자열), create → 0,
+// join → joinEpoch, merge_pending·merge_staged → +1. 안 주면 예전 워커처럼 `epoch` 가 없다(판정하지 않는다).
+function fakeWorker({fresh = true, group = null, decrypt = () => ({sender: 'owner-pc', client: 'owner-pc'}), joinRefuses = () => false, epoch, joinEpoch = 1} = {}) {
+  const w = {group, calls: [], history: [], spawned: true, pendingGroup: null, acked: [], opened: [], reset: [], epoch};
   const bridge = {
     has: () => w.spawned, spawn: async () => { w.spawned = true; }, stop: () => { w.spawned = false; },
     async call(name, method, argument) {
@@ -36,7 +39,13 @@ function fakeWorker({fresh = true, group = null, decrypt = () => ({sender: 'owne
       if (method === 'history_get') return {ok: true, result: {bytes: w.history.find(r => r.seq === argument.seq).bytes}};
       if (method !== 'operation') return {ok: false};
       const m = argument.method, bytes = argument.bytes;
-      const out = o => ({ok: true, result: {cursor: 1, output: o ?? [], ...(m === 'stage_commit' ? {transient: true} : {})}});
+      const out = o => ({ok: true, result: {cursor: 1, output: o ?? [], ...(m === 'stage_commit' ? {transient: true} : {}),
+        ...(w.epoch === undefined ? {} : {epoch: w.epoch === null ? 'none' : String(w.epoch)})}});
+      if (w.epoch !== undefined) {
+        if (m === 'create') w.epoch = 0;
+        else if (m === 'join' && !joinRefuses(bytes)) w.epoch = joinEpoch;
+        else if (m === 'merge_pending' || m === 'merge_staged') w.epoch += 1;
+      }
       switch (m) {
         case 'fingerprint': return out(Array.from(utf8.encode('f'.repeat(64))));
         case 'members': return w.group ? out(frameMembers(w.group)) : {ok: false};
@@ -177,7 +186,9 @@ test('send on a resumed store: own echo row, CAS retry, draft kept on failure', 
   const own = ev.messages.find(x => x.kind === 'text' && x.sender === 'owner-web-aaaaaa');
   assert.equal(own.text, 'hello'); assert.equal(own.seq, 6);
   assert.equal(w.history.at(-1).text, 'hello');
-  await assert.rejects(() => s.send('again'), /403 not_a_member/);
+  // #813 S3: 403 not_a_member while this store still lists the device (also after the resync) — not 「동기화 뒤 다시 시도」.
+  await assert.rejects(() => s.send('again'), new RegExp(strings.room.relayDiverged));
+  assert.equal(s.state.diverged.reason, 'not_a_member');
 });
 
 test('invite: key package → commit 201 pending → own echo merges → targeted Welcome', async () => {
@@ -231,6 +242,113 @@ test('#296 resume: page state lost but the worker holds the group → join state
   // 봉인 보관 안내는 타임라인 시스템 행이 아니라 화면 로그에만 남는다(오너 결정 2026-10-20).
   assert.ok(!ev.messages.some(m => m.kind === 'system' && m.key === 'history'));
   assert.ok(ev.logs.some(l => /seq 40/.test(l) && /보관/.test(l)));
+});
+
+const STATE_KEY = 'hande:room:family:owner-web-aaaaaa:family-mls-synthetic-hande-family';
+const joinedAt = (storage, epoch, roster = ['owner-pc', 'owner-web-aaaaaa']) =>
+  storage.setItem(STATE_KEY, JSON.stringify({joined: true, relaySeq: 5, epoch, roster}));
+
+test('#813 S1: relay room epoch below this store\'s MLS epoch → diverged (notice state), nothing halts; relay back in step → cleared', async () => {
+  const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'owner-web-aaaaaa'], epoch: 3});
+  let relayEpoch = 2;   // restored from a snapshot taken before the last commit
+  const relay = fakeRelay((m, path) => ({status: 200, body: {epoch: relayEpoch, events: [], cursor: 5, members: []}}));
+  const storage = memStorage(); joinedAt(storage, 3);
+  const {s, events: ev} = session({worker: bridge, relay, storage});
+  await s.open(); await s.activate();
+  assert.deepEqual(s.state.diverged, {reason: 'epoch_regressed', relay_epoch: 2, local_epoch: 3});
+  assert.equal(s.state.halted, null, 'notify only');
+  assert.equal(s.state.epoch, 2, 'sends keep the relay epoch (CAS)');
+  assert.ok(ev.logs.some(l => l.includes('릴레이와 어긋남(epoch_regressed)')));
+  assert.ok(!JSON.parse(storage.getItem(STATE_KEY)).diverged, 'not persisted — the next sync decides again');
+  relayEpoch = 3;
+  await s.sync();
+  assert.equal(s.state.diverged, null);
+});
+
+test('#813 S1 never fires in normal flows: own invite (pending until its echo), lost race (409 → clear_pending → winner), reconnect, an old worker', async () => {
+  // Own commit: 201 at relay epoch 0 → 1; the store stays at 0 until the echo merges it.
+  {
+    const {bridge, w} = fakeWorker({fresh: false, group: ['owner-web-aaaaaa'], epoch: 0});
+    let phase = 0;
+    const relay = fakeRelay((m, path, body) => {
+      if (m === 'GET' && path.includes('keypackages')) return {status: 200, body: {ref: 'r', bytes: b64([5, 5])}};
+      if (m === 'POST' && body.kind === 'commit') { phase = 1; return {status: 201, body: {seq: 10, epoch: 1}}; }
+      if (m === 'POST' && body.kind === 'welcome') { phase = 2; return {status: 201, body: {seq: 11, epoch: 1}}; }
+      if (m === 'GET' && phase === 1) return {status: 200, body: {epoch: 1, events: [{seq: 10, device: 'owner-web-aaaaaa', kind: 'commit', epoch: 0, bytes: b64([9, 9])}], cursor: 9, members: []}};
+      return {status: 200, body: {epoch: phase ? 1 : 0, events: [], cursor: 9, members: []}};
+    });
+    const storage = memStorage(); joinedAt(storage, 0, ['owner-web-aaaaaa']);
+    const {s} = session({worker: bridge, relay, storage});
+    await s.open(); await s.activate();
+    await s.invite('mom-web-bbbbbb');
+    assert.equal(w.epoch, 1, 'merged on the echo');
+    await s.sync();   // reconnect: the same relay state again
+    assert.equal(s.state.diverged, null);
+  }
+  // Lost race: our commit draws 409, pending cleared (epoch 0 stays), the winner's commit is read next.
+  {
+    const {bridge, w} = fakeWorker({fresh: false, group: ['bot-1', 'owner-web-aaaaaa'], epoch: 0});
+    let raced = false;
+    const relay = fakeRelay((m, path, body) => {
+      if (m === 'GET' && path.includes('keypackages')) return {status: 200, body: {ref: 'r', bytes: b64([5, 5])}};
+      if (m === 'POST' && body.kind === 'commit') { raced = true; return {status: 409, body: {error: 'cas_mismatch', epoch: 1}}; }
+      if (m === 'GET' && raced) return {status: 200, body: {epoch: 1, events: [{seq: 10, device: 'bot-1', kind: 'commit', epoch: 0, bytes: b64([1])}], cursor: 9, members: []}};
+      return {status: 200, body: {epoch: 0, events: [], cursor: 9, members: []}};
+    });
+    const storage = memStorage(); joinedAt(storage, 0, ['bot-1', 'owner-web-aaaaaa']);
+    const {s} = session({worker: bridge, relay, storage});
+    await s.open(); await s.activate();
+    await assert.rejects(() => s.invite('mom-web-bbbbbb'), new RegExp(strings.room.commitRaced));
+    assert.ok(w.calls.some(c => c[1] === 'clear_pending'));
+    assert.equal(w.epoch, 1, 'the winner merged');
+    await s.sync();
+    assert.equal(s.state.diverged, null);
+  }
+  // A worker without `epoch` in its results (older build): nothing to compare, nothing flagged.
+  {
+    const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'owner-web-aaaaaa']});
+    const relay = fakeRelay(() => ({status: 200, body: {epoch: 0, events: [], cursor: 5, members: []}}));
+    const storage = memStorage(); joinedAt(storage, 7);
+    const {s} = session({worker: bridge, relay, storage});
+    await s.open(); await s.activate();
+    assert.equal(s.state.mlsEpoch, null);
+    assert.equal(s.state.diverged, null);
+  }
+});
+
+test('#813 S3: 403 not_a_member → resync → still a member → relayDiverged (not 「동기화 뒤 다시 시도」); a stored send clears it; removed by a commit read in that resync → the old text', async () => {
+  {
+    const {bridge} = fakeWorker({fresh: false, group: ['owner-pc', 'owner-web-aaaaaa'], epoch: 2});
+    let refuse = true;
+    const relay = fakeRelay((m) => {
+      if (m === 'GET') return {status: 200, body: {epoch: 2, events: [], cursor: 5, members: []}};
+      return refuse ? {status: 403, body: {error: 'not_a_member'}} : {status: 201, body: {seq: 6, epoch: 2}};
+    });
+    const storage = memStorage(); joinedAt(storage, 2);
+    const {s} = session({worker: bridge, relay, storage});
+    await s.open(); await s.activate();
+    assert.equal(s.state.diverged, null, 'in step before the send');
+    await assert.rejects(() => s.send('hi'), err => err.message === strings.room.relayDiverged);
+    assert.deepEqual(s.state.diverged, {reason: 'not_a_member', relay_epoch: 2, local_epoch: 2});
+    refuse = false;   // the next commit re-aligned the relay roster
+    assert.equal(await s.send('hi again'), 6);
+    assert.equal(s.state.diverged, null);
+  }
+  {
+    const {bridge} = fakeWorker({fresh: false, group: ['bot-1', 'owner-web-aaaaaa'], epoch: 1});
+    let posted = false;
+    const relay = fakeRelay((m) => {
+      if (m === 'POST') { posted = true; return {status: 403, body: {error: 'not_a_member'}}; }
+      if (!posted) return {status: 200, body: {epoch: 1, events: [], cursor: 11, members: []}};
+      return {status: 200, body: {epoch: 2, events: [{seq: 12, device: 'bot-1', kind: 'commit', epoch: 1, bytes: b64([1])}], cursor: 11, members: []}};
+    });
+    const storage = memStorage(); storage.setItem(STATE_KEY, JSON.stringify({joined: true, relaySeq: 11, epoch: 1, roster: ['bot-1', 'owner-web-aaaaaa']}));
+    const {s} = session({worker: bridge, relay, storage, pol: policy({report: {adds: [], removes: [{id: 'owner-web-aaaaaa'}], updates: [], path: []}})});
+    await s.open(); await s.activate();
+    await assert.rejects(() => s.send('hi'), /403 not_a_member/);
+    assert.equal(s.state.halted.removed, true, 'the removal was read on the resync');
+    assert.equal(s.state.diverged, null, 'a removal is not divergence');
+  }
 });
 
 test('helpers', () => {

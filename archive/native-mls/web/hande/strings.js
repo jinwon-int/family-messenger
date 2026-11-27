@@ -846,6 +846,8 @@ export const strings = {
     commitRaced: '대화방이 먼저 바뀌어 반영하지 못했습니다. 동기화 뒤 다시 시도해 주세요.',
     commitRefused: (reason) => `변경이 거절되었습니다: ${reason}`,
     sendFailed: (reason) => `보내지 못했습니다(${reason}). 동기화 뒤 다시 시도해 주세요.`,
+    // #813 1단계: 릴레이가 이 기기보다 뒤에 있다(복원) — 방 위 안내, 403 not_a_member 로 못 보낸 글의 안내.
+    relayDiverged: '이 방은 릴레이와 어긋났습니다. 운영자에게 알려 주세요',
     epochChanged: '암호화 키가 바뀌어 다시 암호화합니다.',
     haltRefused: (seq, committer, reason) => `⛔ seq ${seq} ${committer}의 변경을 거부했습니다 — ${reason}`,
     haltRemoved: (seq, committer) => `seq ${seq} ${committer}이(가) 이 기기를 대화방에서 제거했습니다`,

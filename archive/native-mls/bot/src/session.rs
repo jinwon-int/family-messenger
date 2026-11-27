@@ -341,6 +341,7 @@ impl room::MlsGroup for Bound<'_> {
     fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ()> {
         encrypt_frame(self.dev, self.room.ok_or(())?, self.own, plaintext)
     }
+    fn epoch(&self) -> Option<u64> { self.dev.epoch() }
 }
 
 /// Run one MLS operation with rollback (review 2 B-H1/B-H3) — host-core's
@@ -524,14 +525,14 @@ pub fn run(opts: Options) -> Result<(), BotError> {
         }));
     }
     let mut rooms = vec![RoomState {
-        sync: RoomSync { room: opts.room.clone(), cursor: c0, epoch: e0, joined: j0, joinable: true, dirty: false, acked: c0, ack_sent: 0, ack_disabled: false, halted: halted0.is_some() },
+        sync: RoomSync { room: opts.room.clone(), cursor: c0, epoch: e0, joined: j0, joinable: true, dirty: false, acked: c0, ack_sent: 0, ack_disabled: false, halted: halted0.is_some(), ..RoomSync::default() },
         echoes: x0, retry: VecDeque::new(), device, state_path: opts.state_file.clone(), mode: if agent.is_some() { Mode::Agent } else { Mode::Echo }, pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
     }];
     if let Some(watch) = &opts.watch_room {
         // The negative control: a room the bot is never invited to. It must
         // stay unjoined and silent there for the whole session.
         rooms.push(RoomState {
-            sync: RoomSync { room: watch.clone(), cursor: 0, epoch: 0, joined: false, joinable: false, dirty: false, acked: 0, ack_sent: 0, ack_disabled: true, halted: false },
+            sync: RoomSync { room: watch.clone(), cursor: 0, epoch: 0, joined: false, joinable: false, dirty: false, acked: 0, ack_sent: 0, ack_disabled: true, halted: false, ..RoomSync::default() },
             echoes: 0, retry: VecDeque::new(), device: Device::new(&opts.device).map_err(|_| BotError::Local("device new: identity shape rejected"))?, state_path: None, mode: Mode::Watch, pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
         });
     }
@@ -888,7 +889,7 @@ fn health_tick(health: &mut Option<health::Health>, rooms: &[RoomState]) {
         .iter()
         .map(|s| health::RoomHealth {
             room: s.room.clone(), joined: s.joined, mode: s.mode.name(), halted: s.halted,
-            relay_missing: s.relay_missing, pending: s.pending.is_some(), cursor: s.cursor, epoch: s.epoch,
+            relay_missing: s.relay_missing, relay_diverged: s.diverged.clone(), pending: s.pending.is_some(), cursor: s.cursor, epoch: s.epoch,
             marker: if s.halted { s.state_path.as_deref().map(refused_marker_path) } else { None },
         })
         .collect();
@@ -978,12 +979,36 @@ fn poll_room(ctx: &Ctx, state: &mut RoomState, agent: &mut Option<Responder>) ->
     // application in page order) is host-core's `room::poll`; `BotRoom` is the
     // bot's side of it — logging, halt markers, echo/agent/silent, own commits
     // and the echo replay queue.
+    let before = state.diverged.clone();
     let mut host = BotRoom { ctx, state: &mut *state, agent, scanned: 0 };
-    room::poll(&mut host, ctx.own)?;
-    // #755: only a page that was processed to its end moves the watch offset.
+    let polled = room::poll(&mut host, ctx.own);
     let scanned = host.scanned;
+    note_divergence(ctx.own, state, &before);
+    polled?;
+    // #755: only a page that was processed to its end moves the watch offset.
     state.scanned = state.scanned.max(scanned);
     Ok(())
+}
+
+/// #813 phase 1: log a room's relay divergence when it appears or changes
+/// reason, and when it clears. host-core decides (`RoomSync::diverged`: S1
+/// `epoch_regressed` — the relay's room epoch below this device's MLS epoch;
+/// S3 `not_a_member` — a 403 while the group still lists this device); the
+/// bot only reports it — `status` · `room status` · `health.json` and these
+/// lines. Nothing halts and nothing is repaired: the operator re-founds the
+/// room (`room create` + `room invite`, docs/NATIVE-RELAY-OPERATIONS.md).
+fn note_divergence(own: &str, state: &RoomState, before: &Option<room::RelayDiverged>) {
+    match (&state.diverged, before) {
+        (Some(now), before) if before.as_ref().map(|b| b.reason) != Some(now.reason) => {
+            let mut line = health::diverged_json(&state.diverged);
+            line["event"] = "relay_diverged".into();
+            line["room"] = state.room.clone().into();
+            line["device"] = own.into();
+            emit(&line);
+        }
+        (None, Some(_)) => emit(&serde_json::json!({ "event": "relay_realigned", "room": state.room, "device": own })),
+        _ => {}
+    }
 }
 
 /// #814: track whether the relay still has a room this device already saw
@@ -1594,8 +1619,10 @@ impl room::SendHost for BotSender<'_, '_> {
 /// anything else). It rides along into the replay queue on a conflict, so
 /// the replay that finally posts it can still answer the sender.
 fn publish_echo(ctx: &Ctx, state: &mut RoomState, plaintext: &[u8], attempts: u32, notice: Option<&str>) -> Result<Posted, BotError> {
-    let outcome = room::send_application(&mut BotSender { ctx, state }, ctx.own, plaintext)?;
-    Ok(match outcome {
+    let before = state.diverged.clone();
+    let outcome = room::send_application(&mut BotSender { ctx, state }, ctx.own, plaintext);
+    note_divergence(ctx.own, state, &before);
+    Ok(match outcome? {
         SendOutcome::Sent { client_id, response } => {
             // #728: the bot's own replies can be quoted too (relay ack seq).
             if state.mode == Mode::Agent {
@@ -2289,7 +2316,7 @@ fn load_room(dir: &Path, room: &str, device: &str) -> Result<RoomState, BotError
         .ok_or(BotError::Local("room state file vanished"))?;
     let halted = refused_marker_path(&path).exists();
     Ok(RoomState {
-        sync: RoomSync { room: room.to_string(), cursor, epoch, joined, joinable: true, dirty: false, acked: cursor, ack_sent: 0, ack_disabled: false, halted },
+        sync: RoomSync { room: room.to_string(), cursor, epoch, joined, joinable: true, dirty: false, acked: cursor, ack_sent: 0, ack_disabled: false, halted, ..RoomSync::default() },
         echoes, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: read_mode(dir, room), pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
     })
 }
@@ -2399,7 +2426,7 @@ impl Steward {
                 persist_state(&path, &cmd.room, &self.device, &mut dev, 0, 0, true, 0)?;
                 std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), mode.name()).map_err(|_| BotError::Local("mode file write"))?;
                 rooms.push(RoomState {
-                    sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: true, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false },
+                    sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: true, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false, ..RoomSync::default() },
                     echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode, pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
                 });
                 Ok(serde_json::json!({ "op": "create", "room": cmd.room, "mode": mode.name(), "epoch": 0 }))
@@ -2415,7 +2442,7 @@ impl Steward {
                 let stored = ctx.client.post_key_packages(&cmd.room, &self.device, &[(key_ref.as_str(), kp)])?;
                 std::fs::write(room_mode_path(&self.rooms_dir, &cmd.room), Mode::Silent.name()).map_err(|_| BotError::Local("mode file write"))?;
                 rooms.push(RoomState {
-                    sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: false, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false },
+                    sync: RoomSync { room: cmd.room.clone(), cursor: 0, epoch: 0, joined: false, joinable: true, dirty: false, acked: 0, ack_sent: 0, ack_disabled: false, halted: false, ..RoomSync::default() },
                     echoes: 0, retry: VecDeque::new(), device: dev, state_path: Some(path), mode: Mode::Silent, pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
                 });
                 Ok(serde_json::json!({ "op": "join", "room": cmd.room, "key_ref": key_ref, "stored": stored }))
@@ -2542,7 +2569,8 @@ impl Steward {
                 "op": "status", "device": self.device,
                 "rooms": rooms.iter().map(|r| serde_json::json!({
                     "room": r.room, "joined": r.joined, "mode": r.mode.name(), "epoch": r.epoch, "cursor": r.cursor,
-                    "halted": r.halted, "relay_missing": r.relay_missing, "pending": r.pending.is_some(),
+                    "halted": r.halted, "relay_missing": r.relay_missing, "relay_diverged": health::diverged_json(&r.diverged),
+                    "pending": r.pending.is_some(),
                 })).collect::<Vec<_>>(),
             })),
             _ => Err(BotError::Local("unknown op (create|join|invite|remove|close|members|mode|status)")),
@@ -2635,7 +2663,8 @@ fn status(rooms: &[RoomState], relay_watch: watch::Mode) {
             serde_json::json!({
                 "room": state.room, "joined": state.joined, "echoes": state.echoes,
                 "cursor": state.cursor, "epoch": state.epoch, "acked": state.ack_sent,
-                "halted": state.halted, "relay_missing": state.relay_missing, "mode": state.mode.name(), "pending": state.pending.is_some(),
+                "halted": state.halted, "relay_missing": state.relay_missing, "relay_diverged": health::diverged_json(&state.diverged),
+                "mode": state.mode.name(), "pending": state.pending.is_some(),
             })
         })
         .collect();
@@ -3107,7 +3136,7 @@ for line in sys.stdin:
     }
     fn joined_room_at(room: &str, cursor: i64, state_path: Option<PathBuf>) -> RoomState {
         RoomState {
-            sync: RoomSync { room: room.into(), cursor, epoch: 2, joined: true, joinable: true, dirty: false, acked: cursor, ack_sent: cursor, ack_disabled: false, halted: false },
+            sync: RoomSync { room: room.into(), cursor, epoch: 2, joined: true, joinable: true, dirty: false, acked: cursor, ack_sent: cursor, ack_disabled: false, halted: false, ..RoomSync::default() },
             echoes: 3, retry: VecDeque::new(), device: Device::new("bot-1").unwrap_or_else(|_| panic!("device new")), state_path, mode: Mode::Echo, pending: None, recent: Recent::default(), relay_missing: false, scanned: 0,
         }
     }
@@ -3232,6 +3261,42 @@ for line in sys.stdin:
 
         let seen = server.join().expect("server thread");
         assert_eq!(seen.len(), 6, "{seen:?}");
+    }
+
+    /// #813 through `poll_room` with a real device: its group is at epoch 1
+    /// (its own invite merged on the echo) and the relay answers epoch 0 — it
+    /// lost that commit. The room is reported `relay_diverged`
+    /// (epoch_regressed, 0, 1), not halted; a page back at epoch 1 clears it.
+    /// A 403 `not_a_member` on a reply arms S3 and the next page — the group
+    /// still lists the bot — confirms it.
+    #[test]
+    fn poll_room_reports_a_relay_behind_the_group() {
+        let page = |epoch: i64| (200u16, format!(r#"{{"epoch":{epoch},"revision":1,"events":[],"first_seq":1}}"#));
+        let (base, server) = canned_relay_with_status(vec![page(0), page(1), (403, r#"{"error":"not_a_member"}"#.into()), page(1)]);
+        let client = Client::with_access(&base, api::Access::None);
+        let ctx = Ctx { client: &client, own: "bot-1", typing: None };
+        let mut state = joined_room("family", 3);
+        state.device.create().expect("group");
+        let mut peer = Device::new("owner-pc").expect("peer");
+        state.device.invite_with_commit(&peer.key_package().expect("key package")).expect("invite");
+        state.device.merge_pending().expect("merged on its echo");
+        state.epoch = 1;
+
+        poll_room(&ctx, &mut state, &mut None).unwrap_or_else(|e| panic!("restored relay: {e}"));
+        let behind = room::RelayDiverged { reason: room::DivergedReason::EpochRegressed, relay_epoch: 0, local_epoch: 1 };
+        assert_eq!(state.diverged, Some(behind));
+        assert!(!state.halted, "reported, not halted");
+        assert_eq!(health::diverged_json(&state.diverged), serde_json::json!({"reason": "epoch_regressed", "relay_epoch": 0, "local_epoch": 1}));
+        poll_room(&ctx, &mut state, &mut None).unwrap_or_else(|e| panic!("in step: {e}"));
+        assert_eq!(state.diverged, None, "a relay at the group's epoch clears it");
+        assert_eq!(health::diverged_json(&state.diverged), serde_json::Value::Null);
+
+        let err = publish_echo(&ctx, &mut state, b"hi", 0, None).expect_err("a 403 stays the caller's");
+        assert!(matches!(err, BotError::Api { status: 403, .. }), "{err}");
+        assert!(state.refused_member && state.diverged.is_none(), "the next page decides");
+        poll_room(&ctx, &mut state, &mut None).unwrap_or_else(|e| panic!("after the 403: {e}"));
+        assert_eq!(state.diverged, Some(room::RelayDiverged { reason: room::DivergedReason::NotAMember, relay_epoch: 1, local_epoch: 1 }));
+        assert_eq!(server.join().expect("relay").len(), 4);
     }
 
     /// #392: transport-level failures are transient, contract errors are not;

@@ -358,6 +358,10 @@ impl Relay {
     pub fn bump_epoch(&self, room: &str) {
         self.rooms.lock().unwrap().entry(room.into()).or_default().epoch += 1;
     }
+    /// 오래된 스냅샷으로 복원한 것처럼 epoch 를 하나 되돌린다(그 뒤의 commit 하나가 사라졌다, #813).
+    pub fn rewind_epoch(&self, room: &str) {
+        self.rooms.lock().unwrap().entry(room.into()).or_default().epoch -= 1;
+    }
     /// `before` 앞의 seq 를 정리한다(#268 history gap 유발).
     pub fn prune_before(&self, room: &str, before: i64) {
         self.rooms.lock().unwrap().entry(room.into()).or_default().rows.retain(|r| r.seq >= before);
