@@ -18,6 +18,9 @@
 //! - [`self_service`]: device self-service decisions (#574, #366 slice 3g) — who may approve,
 //!   sign roles, or be treated as a sibling; run against
 //!   `archive/native-mls/tests/fixtures/self-service-vectors.json` like the web and Android code.
+//! - [`sibling_queue`]: sibling-invite queue and missing-room rescan rules (#616, #366 slice 3h-a),
+//!   run against `archive/native-mls/tests/fixtures/sibling-queue-vectors.json` like the web and
+//!   Android code.
 //!
 //! This crate does not link the MLS facade: hosts pass it framed bytes and reports, and adapt
 //! their group object to [`room::MlsGroup`].
@@ -28,3 +31,4 @@ pub mod http;
 pub mod policy;
 pub mod room;
 pub mod self_service;
+pub mod sibling_queue;

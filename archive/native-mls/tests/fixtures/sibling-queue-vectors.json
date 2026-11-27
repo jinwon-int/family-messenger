@@ -1,0 +1,1252 @@
+{
+  "about": "#366 slice 3h-a: sibling-invite queue + missing-room rescan (#616). host-core `sibling_queue`, ios-ffi, Android `core/SelfService`+`SiblingRescan` and (rules only) web `hande/self-service.js` run this file. Times are ms. Queue entries: {target, rooms, since, progress, recheck_at, origin} (null = absent). `budget.expect` null = no limit. `*_text` sections are the Android SharedPreferences text format (web stores JSON and skips them).",
+  "version": 1,
+  "constants": {
+    "rescan_interval_ms": 21600000,
+    "rescan_deferral_ms": 1800000,
+    "rescan_origin": "rescan",
+    "sibling_lobby_recheck_ms": 60000,
+    "sibling_invite_ttl_ms": 86400000
+  },
+  "mes": {
+    "pair": {
+      "subject": "owner",
+      "policy_revision": 7,
+      "devices": [
+        {
+          "device_id": "phone-b",
+          "actor": "owner",
+          "fingerprint": "fp",
+          "status": "active",
+          "acceptance": "accepted",
+          "roles": [
+            "registrar"
+          ]
+        },
+        {
+          "device_id": "web-a",
+          "actor": "owner",
+          "fingerprint": "fp",
+          "status": "active",
+          "acceptance": "accepted",
+          "roles": []
+        },
+        {
+          "device_id": "old-c",
+          "actor": "owner",
+          "fingerprint": "fp",
+          "status": "revoked",
+          "acceptance": "accepted",
+          "roles": []
+        },
+        {
+          "device_id": "kid-d",
+          "actor": "kid",
+          "fingerprint": "fp",
+          "status": "active",
+          "acceptance": "accepted",
+          "roles": []
+        },
+        {
+          "device_id": "tab-e",
+          "actor": "owner",
+          "fingerprint": "fp",
+          "status": "active",
+          "acceptance": "accepted",
+          "roles": []
+        }
+      ]
+    },
+    "revoked_self": {
+      "subject": "owner",
+      "policy_revision": 3,
+      "devices": [
+        {
+          "device_id": "phone-b",
+          "actor": "owner",
+          "fingerprint": "fp",
+          "status": "revoked",
+          "acceptance": "accepted",
+          "roles": []
+        },
+        {
+          "device_id": "web-a",
+          "actor": "owner",
+          "fingerprint": "fp",
+          "status": "active",
+          "acceptance": "accepted",
+          "roles": []
+        }
+      ]
+    },
+    "no_actor": {
+      "subject": "owner",
+      "policy_revision": 3,
+      "devices": [
+        {
+          "device_id": "phone-b",
+          "actor": "",
+          "fingerprint": "fp",
+          "status": "active",
+          "acceptance": "accepted",
+          "roles": []
+        },
+        {
+          "device_id": "web-a",
+          "actor": "",
+          "fingerprint": "fp",
+          "status": "active",
+          "acceptance": "accepted",
+          "roles": []
+        }
+      ]
+    }
+  },
+  "enqueue": [
+    {
+      "name": "new target, empty/duplicate rooms dropped",
+      "queue": [],
+      "target": "web-a",
+      "rooms": [
+        "r1",
+        "",
+        "r1",
+        "r2"
+      ],
+      "now": 1000,
+      "origin": null,
+      "expect": [
+        {
+          "target": "web-a",
+          "rooms": [
+            "r1",
+            "r2"
+          ],
+          "since": 1000,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ]
+    },
+    {
+      "name": "new target with rescan origin",
+      "queue": [],
+      "target": "web-a",
+      "rooms": [
+        "r1"
+      ],
+      "now": 1000,
+      "origin": "rescan",
+      "expect": [
+        {
+          "target": "web-a",
+          "rooms": [
+            "r1"
+          ],
+          "since": 1000,
+          "progress": null,
+          "recheck_at": null,
+          "origin": "rescan"
+        }
+      ]
+    },
+    {
+      "name": "existing target merges rooms, keeps since/progress/origin",
+      "queue": [
+        {
+          "target": "web-a",
+          "rooms": [
+            "r1"
+          ],
+          "since": 100,
+          "progress": 300,
+          "recheck_at": 400,
+          "origin": "rescan"
+        },
+        {
+          "target": "tab-e",
+          "rooms": [
+            "r9"
+          ],
+          "since": 50,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ],
+      "target": "web-a",
+      "rooms": [
+        "r2",
+        "r1"
+      ],
+      "now": 5000,
+      "origin": null,
+      "expect": [
+        {
+          "target": "web-a",
+          "rooms": [
+            "r1",
+            "r2"
+          ],
+          "since": 100,
+          "progress": 300,
+          "recheck_at": 400,
+          "origin": "rescan"
+        },
+        {
+          "target": "tab-e",
+          "rooms": [
+            "r9"
+          ],
+          "since": 50,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ]
+    },
+    {
+      "name": "no non-empty room: unchanged",
+      "queue": [
+        {
+          "target": "web-a",
+          "rooms": [
+            "r1"
+          ],
+          "since": 100,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ],
+      "target": "tab-e",
+      "rooms": [
+        "",
+        ""
+      ],
+      "now": 5000,
+      "origin": null,
+      "expect": [
+        {
+          "target": "web-a",
+          "rooms": [
+            "r1"
+          ],
+          "since": 100,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ]
+    },
+    {
+      "name": "second target appended after the first",
+      "queue": [
+        {
+          "target": "web-a",
+          "rooms": [
+            "r1"
+          ],
+          "since": 100,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ],
+      "target": "tab-e",
+      "rooms": [
+        "r3"
+      ],
+      "now": 7000,
+      "origin": "rescan",
+      "expect": [
+        {
+          "target": "web-a",
+          "rooms": [
+            "r1"
+          ],
+          "since": 100,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        },
+        {
+          "target": "tab-e",
+          "rooms": [
+            "r3"
+          ],
+          "since": 7000,
+          "progress": null,
+          "recheck_at": null,
+          "origin": "rescan"
+        }
+      ]
+    }
+  ],
+  "split": [
+    {
+      "name": "ttl from progress, else since; boundary == ttl stays live",
+      "now": 100000,
+      "ttl": 1000,
+      "queue": [
+        {
+          "target": "a",
+          "rooms": [
+            "r"
+          ],
+          "since": 99000,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        },
+        {
+          "target": "b",
+          "rooms": [
+            "r"
+          ],
+          "since": 98999,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        },
+        {
+          "target": "c",
+          "rooms": [
+            "r"
+          ],
+          "since": 1,
+          "progress": 99500,
+          "recheck_at": null,
+          "origin": null
+        },
+        {
+          "target": "d",
+          "rooms": [
+            "r"
+          ],
+          "since": 99900,
+          "progress": 50000,
+          "recheck_at": null,
+          "origin": null
+        }
+      ],
+      "expect": {
+        "live": [
+          "a",
+          "c"
+        ],
+        "expired": [
+          "b",
+          "d"
+        ]
+      }
+    },
+    {
+      "name": "default ttl 24h",
+      "now": 90000000,
+      "ttl": 86400000,
+      "queue": [
+        {
+          "target": "a",
+          "rooms": [
+            "r"
+          ],
+          "since": 3600000,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        },
+        {
+          "target": "b",
+          "rooms": [
+            "r"
+          ],
+          "since": 3599999,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ],
+      "expect": {
+        "live": [
+          "a"
+        ],
+        "expired": [
+          "b"
+        ]
+      }
+    }
+  ],
+  "budget": [
+    {
+      "name": "unknown live: no limit",
+      "live": null,
+      "expect": null
+    },
+    {
+      "name": "zero",
+      "live": 0,
+      "expect": 0
+    },
+    {
+      "name": "positive",
+      "live": 5,
+      "expect": 5
+    },
+    {
+      "name": "negative clamps to zero",
+      "live": -3,
+      "expect": 0
+    }
+  ],
+  "next_entry": [
+    {
+      "name": "no room left",
+      "entry": {
+        "target": "a",
+        "rooms": [
+          "r1"
+        ],
+        "since": 10,
+        "progress": null,
+        "recheck_at": null,
+        "origin": null
+      },
+      "remaining": [],
+      "now": 500,
+      "progressed": true,
+      "starved": false,
+      "expect": null
+    },
+    {
+      "name": "progressed: progress = now, recheck cleared",
+      "entry": {
+        "target": "a",
+        "rooms": [
+          "r1",
+          "r2"
+        ],
+        "since": 10,
+        "progress": 20,
+        "recheck_at": 30,
+        "origin": "rescan"
+      },
+      "remaining": [
+        "r2"
+      ],
+      "now": 500,
+      "progressed": true,
+      "starved": false,
+      "expect": {
+        "target": "a",
+        "rooms": [
+          "r2"
+        ],
+        "since": 10,
+        "progress": 500,
+        "recheck_at": null,
+        "origin": "rescan"
+      }
+    },
+    {
+      "name": "starved: recheck = now + 60s, progress kept",
+      "entry": {
+        "target": "a",
+        "rooms": [
+          "r1",
+          "r2"
+        ],
+        "since": 10,
+        "progress": 20,
+        "recheck_at": null,
+        "origin": null
+      },
+      "remaining": [
+        "r1",
+        "r2"
+      ],
+      "now": 500,
+      "progressed": false,
+      "starved": true,
+      "expect": {
+        "target": "a",
+        "rooms": [
+          "r1",
+          "r2"
+        ],
+        "since": 10,
+        "progress": 20,
+        "recheck_at": 60500,
+        "origin": null
+      }
+    },
+    {
+      "name": "neither: recheck cleared, progress kept",
+      "entry": {
+        "target": "a",
+        "rooms": [
+          "r1"
+        ],
+        "since": 10,
+        "progress": null,
+        "recheck_at": 99,
+        "origin": null
+      },
+      "remaining": [
+        "r1"
+      ],
+      "now": 500,
+      "progressed": false,
+      "starved": false,
+      "expect": {
+        "target": "a",
+        "rooms": [
+          "r1"
+        ],
+        "since": 10,
+        "progress": null,
+        "recheck_at": null,
+        "origin": null
+      }
+    }
+  ],
+  "rescan_siblings": [
+    {
+      "name": "other active devices of my actor, sorted",
+      "me": "pair",
+      "device": "phone-b",
+      "expect": [
+        "tab-e",
+        "web-a"
+      ]
+    },
+    {
+      "name": "from another device",
+      "me": "pair",
+      "device": "tab-e",
+      "expect": [
+        "phone-b",
+        "web-a"
+      ]
+    },
+    {
+      "name": "my record revoked",
+      "me": "revoked_self",
+      "device": "phone-b",
+      "expect": []
+    },
+    {
+      "name": "no actor",
+      "me": "no_actor",
+      "device": "phone-b",
+      "expect": []
+    },
+    {
+      "name": "not on the chain",
+      "me": "pair",
+      "device": "ghost",
+      "expect": []
+    },
+    {
+      "name": "no /v2/me",
+      "me": null,
+      "device": "phone-b",
+      "expect": []
+    }
+  ],
+  "rescan_due": [
+    {
+      "name": "never ran",
+      "state": {
+        "last": null,
+        "pending": []
+      },
+      "now": 5,
+      "expect": true
+    },
+    {
+      "name": "interval not over",
+      "state": {
+        "last": 1000,
+        "pending": []
+      },
+      "now": 21600999,
+      "expect": false
+    },
+    {
+      "name": "interval over (boundary)",
+      "state": {
+        "last": 1000,
+        "pending": []
+      },
+      "now": 21601000,
+      "expect": true
+    },
+    {
+      "name": "deferred room wait over",
+      "state": {
+        "last": 1000,
+        "pending": [
+          {
+            "key": "web-a|r1",
+            "seen": 2000
+          }
+        ]
+      },
+      "now": 1802000,
+      "expect": true
+    },
+    {
+      "name": "deferred room wait not over",
+      "state": {
+        "last": 1000,
+        "pending": [
+          {
+            "key": "web-a|r1",
+            "seen": 2000
+          }
+        ]
+      },
+      "now": 1801999,
+      "expect": false
+    }
+  ],
+  "rescan_turn": [
+    {
+      "name": "a joined room not synced: not ready, state kept",
+      "device": "phone-b",
+      "siblings": [
+        "web-a"
+      ],
+      "now": 9000,
+      "state": {
+        "last": 10,
+        "pending": [
+          {
+            "key": "web-a|r1",
+            "seen": 5
+          }
+        ]
+      },
+      "excluded": {
+        "web-a": []
+      },
+      "rooms": [
+        {
+          "room": "r1",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b"
+          ],
+          "synced": true
+        },
+        {
+          "room": "r2",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b"
+          ],
+          "synced": false
+        }
+      ],
+      "expect": {
+        "ready": false,
+        "enqueue": [],
+        "state": {
+          "last": 10,
+          "pending": [
+            {
+              "key": "web-a|r1",
+              "seen": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "leader takes at once; excluded skipped; old relay (null) and unknown sibling skipped",
+      "device": "phone-b",
+      "siblings": [
+        "tab-e",
+        "web-a",
+        "zz-f"
+      ],
+      "now": 100000,
+      "state": {
+        "last": null,
+        "pending": []
+      },
+      "excluded": {
+        "web-a": [
+          "r3"
+        ],
+        "tab-e": null
+      },
+      "rooms": [
+        {
+          "room": "r1",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b"
+          ],
+          "synced": true
+        },
+        {
+          "room": "r2",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "web-a"
+          ],
+          "synced": true
+        },
+        {
+          "room": "r3",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b"
+          ],
+          "synced": true
+        },
+        {
+          "room": "r4",
+          "joined": true,
+          "halted": true,
+          "pending": false,
+          "roster": [
+            "phone-b"
+          ],
+          "synced": true
+        },
+        {
+          "room": "r5",
+          "joined": false,
+          "halted": false,
+          "pending": false,
+          "roster": null,
+          "synced": false
+        },
+        {
+          "room": "r6",
+          "joined": true,
+          "halted": false,
+          "pending": true,
+          "roster": [
+            "phone-b"
+          ],
+          "synced": true
+        }
+      ],
+      "expect": {
+        "ready": true,
+        "enqueue": [
+          {
+            "target": "web-a",
+            "rooms": [
+              "r1"
+            ]
+          }
+        ],
+        "state": {
+          "last": 100000,
+          "pending": []
+        }
+      }
+    },
+    {
+      "name": "no lower ID of mine in the room: I lead; a roster member that is not my sibling is ignored; stale pending dropped",
+      "device": "phone-b",
+      "siblings": [
+        "web-a"
+      ],
+      "now": 4000000,
+      "state": {
+        "last": 1,
+        "pending": [
+          {
+            "key": "web-a|r1",
+            "seen": 2200000
+          },
+          {
+            "key": "web-a|r9",
+            "seen": 1
+          }
+        ]
+      },
+      "excluded": {
+        "web-a": []
+      },
+      "rooms": [
+        {
+          "room": "r1",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "aa-tab"
+          ],
+          "synced": true
+        },
+        {
+          "room": "r2",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "aa-tab",
+            "outsider"
+          ],
+          "synced": true
+        },
+        {
+          "room": "r7",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "aa-tab"
+          ],
+          "synced": true
+        }
+      ],
+      "expect": {
+        "ready": true,
+        "enqueue": [
+          {
+            "target": "web-a",
+            "rooms": [
+              "r1",
+              "r2",
+              "r7"
+            ]
+          }
+        ],
+        "state": {
+          "last": 4000000,
+          "pending": []
+        }
+      }
+    },
+    {
+      "name": "two siblings, lower-ID sibling present makes me wait",
+      "device": "phone-b",
+      "siblings": [
+        "aa-tab",
+        "web-a"
+      ],
+      "now": 4000000,
+      "state": {
+        "last": 1,
+        "pending": [
+          {
+            "key": "web-a|r1",
+            "seen": 2200000
+          },
+          {
+            "key": "web-a|r7",
+            "seen": 2200001
+          }
+        ]
+      },
+      "excluded": {
+        "web-a": [],
+        "aa-tab": []
+      },
+      "rooms": [
+        {
+          "room": "r1",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "aa-tab"
+          ],
+          "synced": true
+        },
+        {
+          "room": "r2",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "aa-tab",
+            "outsider"
+          ],
+          "synced": true
+        },
+        {
+          "room": "r7",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": [
+            "phone-b",
+            "aa-tab"
+          ],
+          "synced": true
+        },
+        {
+          "room": "r8",
+          "joined": true,
+          "halted": false,
+          "pending": false,
+          "roster": null,
+          "synced": true
+        }
+      ],
+      "expect": {
+        "ready": true,
+        "enqueue": [
+          {
+            "target": "aa-tab",
+            "rooms": [
+              "r8"
+            ]
+          },
+          {
+            "target": "web-a",
+            "rooms": [
+              "r1",
+              "r8"
+            ]
+          }
+        ],
+        "state": {
+          "last": 4000000,
+          "pending": [
+            {
+              "key": "web-a|r2",
+              "seen": 4000000
+            },
+            {
+              "key": "web-a|r7",
+              "seen": 2200001
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "queue_text_decode": [
+    {
+      "name": "absent",
+      "text": null,
+      "expect": []
+    },
+    {
+      "name": "blank",
+      "text": "  \n\t",
+      "expect": []
+    },
+    {
+      "name": "3-field line",
+      "text": "web-a|1000|r1,r2",
+      "expect": [
+        {
+          "target": "web-a",
+          "rooms": [
+            "r1",
+            "r2"
+          ],
+          "since": 1000,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ]
+    },
+    {
+      "name": "6-field line, empty recheck",
+      "text": "web-a|1000|r1|2000||rescan",
+      "expect": [
+        {
+          "target": "web-a",
+          "rooms": [
+            "r1"
+          ],
+          "since": 1000,
+          "progress": 2000,
+          "recheck_at": null,
+          "origin": "rescan"
+        }
+      ]
+    },
+    {
+      "name": "malformed lines dropped, bad room IDs filtered",
+      "text": "bad target!|1|r1\nweb-a|x|r1\nweb-a|5|r1|y||\nweb-a|5|r1|||bad origin\ntab-e|7|r1,,bad room!,r2\nonly|two\nweb-a|9|r1|1|2|rescan|extra",
+      "expect": [
+        {
+          "target": "tab-e",
+          "rooms": [
+            "r1",
+            "r2"
+          ],
+          "since": 7,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ]
+    },
+    {
+      "name": "CRLF and CR split lines; empty rooms field",
+      "text": "a|1|r1\r\nb|2|r2\rc|3|",
+      "expect": [
+        {
+          "target": "a",
+          "rooms": [
+            "r1"
+          ],
+          "since": 1,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        },
+        {
+          "target": "b",
+          "rooms": [
+            "r2"
+          ],
+          "since": 2,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        },
+        {
+          "target": "c",
+          "rooms": [],
+          "since": 3,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ]
+    },
+    {
+      "name": "trailing newline",
+      "text": "a|1|r1\n",
+      "expect": [
+        {
+          "target": "a",
+          "rooms": [
+            "r1"
+          ],
+          "since": 1,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ]
+    },
+    {
+      "name": "signed numbers",
+      "text": "a|-5|r1\nb|+7|r2|+8|-9|",
+      "expect": [
+        {
+          "target": "a",
+          "rooms": [
+            "r1"
+          ],
+          "since": -5,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        },
+        {
+          "target": "b",
+          "rooms": [
+            "r2"
+          ],
+          "since": 7,
+          "progress": 8,
+          "recheck_at": -9,
+          "origin": null
+        }
+      ]
+    }
+  ],
+  "queue_text_encode": [
+    {
+      "name": "empty",
+      "queue": [],
+      "expect": ""
+    },
+    {
+      "name": "3-field form without progress information",
+      "queue": [
+        {
+          "target": "a",
+          "rooms": [
+            "r1",
+            "r2"
+          ],
+          "since": 1000,
+          "progress": null,
+          "recheck_at": null,
+          "origin": null
+        }
+      ],
+      "expect": "a|1000|r1,r2"
+    },
+    {
+      "name": "6-field form, empty fields for absent values",
+      "queue": [
+        {
+          "target": "a",
+          "rooms": [
+            "r1"
+          ],
+          "since": 10,
+          "progress": 20,
+          "recheck_at": null,
+          "origin": null
+        },
+        {
+          "target": "b",
+          "rooms": [],
+          "since": 5,
+          "progress": null,
+          "recheck_at": null,
+          "origin": "rescan"
+        }
+      ],
+      "expect": "a|10|r1|20||\nb|5||||rescan"
+    }
+  ],
+  "rescan_state_text_decode": [
+    {
+      "name": "absent",
+      "text": null,
+      "expect": {
+        "last": null,
+        "pending": []
+      }
+    },
+    {
+      "name": "empty",
+      "text": "",
+      "expect": {
+        "last": null,
+        "pending": []
+      }
+    },
+    {
+      "name": "empty head only",
+      "text": "\n",
+      "expect": {
+        "last": null,
+        "pending": []
+      }
+    },
+    {
+      "name": "head only",
+      "text": "123",
+      "expect": {
+        "last": 123,
+        "pending": []
+      }
+    },
+    {
+      "name": "bad lines dropped; repeated key keeps first position, later value",
+      "text": "123\nweb-a|r1|50\nbad id!|r1|5\nweb-a|r2|x\nweb-a|r1|60\ntab-e|r3|7",
+      "expect": {
+        "last": 123,
+        "pending": [
+          {
+            "key": "web-a|r1",
+            "seen": 60
+          },
+          {
+            "key": "tab-e|r3",
+            "seen": 7
+          }
+        ]
+      }
+    },
+    {
+      "name": "broken head: empty state",
+      "text": "abc\nweb-a|r1|50",
+      "expect": {
+        "last": null,
+        "pending": []
+      }
+    },
+    {
+      "name": "never ran, pending kept",
+      "text": "\nweb-a|r1|50",
+      "expect": {
+        "last": null,
+        "pending": [
+          {
+            "key": "web-a|r1",
+            "seen": 50
+          }
+        ]
+      }
+    },
+    {
+      "name": "LF only: CRLF head is broken",
+      "text": "5\r\nweb-a|r1|50",
+      "expect": {
+        "last": null,
+        "pending": []
+      }
+    }
+  ],
+  "rescan_state_text_encode": [
+    {
+      "name": "empty",
+      "state": {
+        "last": null,
+        "pending": []
+      },
+      "expect": ""
+    },
+    {
+      "name": "last and pending in order",
+      "state": {
+        "last": 5,
+        "pending": [
+          {
+            "key": "web-a|r1",
+            "seen": 50
+          },
+          {
+            "key": "tab-e|r3",
+            "seen": 7
+          }
+        ]
+      },
+      "expect": "5\nweb-a|r1|50\ntab-e|r3|7"
+    },
+    {
+      "name": "never ran with pending",
+      "state": {
+        "last": null,
+        "pending": [
+          {
+            "key": "a|b",
+            "seen": 1
+          }
+        ]
+      },
+      "expect": "\na|b|1"
+    }
+  ]
+}
