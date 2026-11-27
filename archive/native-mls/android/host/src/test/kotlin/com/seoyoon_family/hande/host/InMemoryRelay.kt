@@ -185,7 +185,8 @@ class InMemoryRelay(private val base: String) : HttpTransport {
 
     private fun postEvent(room: String, body: ByteArray): HttpResponse {
         val json = String(body, Charsets.UTF_8)
-        val fields = reString.findAll(json).associate { it.groupValues[1] to it.groupValues[2] }
+        // 첫 값만(#900): commit 은 `members:[{"device":…,"actor":…}]` 을 싣고, 최상위 `device` 는 그보다 앞에 온다(serde 필드 순서).
+        val fields = reString.findAll(json).groupBy({ it.groupValues[1] }, { it.groupValues[2] }).mapValues { it.value.first() }
         val device = fields.getValue("device")
         val clientId = fields.getValue("client_id")
         val kind = fields.getValue("kind")
@@ -197,6 +198,8 @@ class InMemoryRelay(private val base: String) : HttpTransport {
             trace += "CUT POST welcome $clientId"
             throw RoomException.Host("connection reset (test)")
         }
+        // #900: 운영 릴레이(기기 정책 켜짐, server.go M3b)와 같다 — commit 은 커밋 뒤 멤버 목록을 실어야 한다.
+        if (kind == "commit" && !json.contains(""""members":[{""")) return respond(400, """{"error":"commit_members_required"}""")
         val state = rooms.getOrPut(room) { RoomRows() }
         if (state.closed) return respond(410, """{"error":"room_closed"}""")
         state.rows.firstOrNull { it.device == device && it.clientId == clientId }?.let { existing ->
