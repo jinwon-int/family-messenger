@@ -258,6 +258,12 @@ fn invite_consumes_the_lobby_package_and_posts_the_welcome_after_the_echo() {
     assert!(persist < post, "{trace:?}");
     let rows = h.relay.rows("room-a");
     assert_eq!((rows[2].kind.as_str(), rows[2].targets.as_slice()), ("welcome", &["owner-tablet".to_string()][..]));
+    // #900: the commit replicates the **post-commit** roster (the invitee included), sorted, actor = first '-' segment —
+    // the relay with a device policy store refuses a commit without it (400 commit_members_required).
+    assert_eq!(rows[1].kind, "commit");
+    let mut want: Vec<(String, String)> = ["owner-pc", "owner-phone", "owner-tablet"].iter().map(|d| (d.to_string(), "owner".to_string())).collect();
+    want.sort();
+    assert_eq!(rows[1].members, want, "post-commit member list");
 
     // 대상: welcomes 에 `from` = 초대한 기기 → adopt → join.
     let pending = ok(tablet.welcomes(), "welcomes");
