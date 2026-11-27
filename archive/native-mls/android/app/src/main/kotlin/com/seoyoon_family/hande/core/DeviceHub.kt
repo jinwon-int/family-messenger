@@ -21,6 +21,7 @@ import com.seoyoon_family.hande.mls.MlsInvite
 import com.seoyoon_family.hande.mls.MlsLobby
 import com.seoyoon_family.hande.mls.MlsMe
 import com.seoyoon_family.hande.mls.MlsPolicyCommit
+import com.seoyoon_family.hande.mls.MlsRemove
 import com.seoyoon_family.hande.mls.MlsRoom
 import com.seoyoon_family.hande.mls.MlsWatchRoom
 import com.seoyoon_family.hande.mls.RoomEvent
@@ -727,7 +728,8 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         val sync = runCatching { h.room.syncState() }.getOrNull()
         val joined = sync?.joined ?: false
         return SelfService.RoomView(
-            h.name, joined, halted, pending = sync?.pendingInvite != null,
+            // #875: 초대 Welcome 대기뿐 아니라 내 commit(내보내기) echo 대기도 「내 commit 대기」 — 대기열이 그 방을 다음 틱으로 남긴다.
+            h.name, joined, halted, pending = sync?.pendingInvite != null || runCatching { h.room.hasPendingCommit() }.getOrDefault(false),
             roster = if (joined && sync != null) roster(h, sync.epoch) else null, synced = h.synced || halted,
         )
     }
@@ -793,13 +795,56 @@ class DeviceHub(context: Context, val settings: Settings, private val sealer: Ke
         settings.siblingRescanState = SiblingRescan.encodeState(turn.state)
         val skipped = siblings.filter { excluded[it] == null }
         if (skipped.isNotEmpty()) Log.i(TAG, "sibling rescan: relay gave no excluded_rooms — skipped ${skipped.joinToString(",")}")
-        if (turn.enqueue.isEmpty()) return
-        var queue = SelfService.decodeSiblingQueue(settings.siblingQueue)
-        for ((target, list) in turn.enqueue) {
-            queue = SelfService.enqueueSiblingInvites(queue, target, list, now, origin = SiblingRescan.ORIGIN)
-            Log.i(TAG, "sibling rescan: $target missing from ${list.joinToString(",")}")
+        if (turn.enqueue.isNotEmpty()) {
+            var queue = SelfService.decodeSiblingQueue(settings.siblingQueue)
+            for ((target, list) in turn.enqueue) {
+                queue = SelfService.enqueueSiblingInvites(queue, target, list, now, origin = SiblingRescan.ORIGIN)
+                Log.i(TAG, "sibling rescan: $target missing from ${list.joinToString(",")}")
+            }
+            settings.siblingQueue = SelfService.encodeSiblingQueue(queue)
         }
-        settings.siblingQueue = SelfService.encodeSiblingQueue(queue)
+        repairStuckSiblings(l, identity, siblings, now)
+    }
+
+    /**
+     * #875(#366 3h-b 1차) 멈춘 참여 복구 — 경우 A: 형제 기기가 방의 명단에는 있는데 그 방의 Welcome 을 30분 넘게 소비하지 못했으면
+     * (`GET /v2/lobby/welcomes?device=<형제>`, 코어 `MlsLobby.welcomesFor`) 그 방에서 내보내고(`MlsRoom.remove`) 다시 초대한다(대기열,
+     * origin `repair` — 포기·실패는 알린다). 등록 기기만 하고(오너 결정), 같은 (형제, 방)은 하루에 한 번(`SiblingRepair.INTERVAL_MS`), 할 때마다 알린다.
+     * 재탐색 주기(최소 6시간)에 같이 돈다. `remove` 가 `Posted` 로 끝나면 그 방은 「내 commit 대기」라 대기열이 echo 뒤에 초대한다.
+     * 경우 B(Welcome 은 지나갔는데 참여 실패)는 릴레이 API 로 보이지 않아 다루지 않는다.
+     */
+    private fun repairStuckSiblings(l: MlsLobby, identity: String, siblings: List<String>, now: Long) {
+        if (!SiblingRepair.allowed(me, identity)) return
+        var state = SiblingRepair.decodeState(settings.siblingRepairState)
+        var queue = SelfService.decodeSiblingQueue(settings.siblingQueue)
+        var changed = false
+        for (target in siblings) {
+            val welcomes = try { l.welcomesFor(target) } catch (e: RoomException) {
+                Log.w(TAG, "sibling repair: welcomes for $target: ${e.message}"); continue
+            }
+            if (welcomes.isEmpty()) continue
+            for (roomId in SiblingRepair.stuckRooms(rooms.values.map(::roomView), target, welcomes, state, now)) {
+                val h = rooms[roomId] ?: continue
+                val r = try { h.room.remove(target) } catch (e: RoomException) {
+                    Log.w(TAG, "sibling repair: remove $target from $roomId: $e"); continue
+                }
+                when (r) {
+                    is MlsRemove.Removed, is MlsRemove.Posted -> {
+                        state = SiblingRepair.mark(state, target, roomId, now)
+                        queue = SelfService.enqueueSiblingInvites(queue, target, listOf(roomId), now, origin = SiblingRepair.ORIGIN)
+                        changed = true
+                        Log.i(TAG, "sibling repair: $target stuck in $roomId — removed ($r), re-invite queued")
+                        notice(Strings.siblingRepaired(target, roomId))
+                    }
+                    is MlsRemove.Pending, is MlsRemove.Raced -> Log.i(TAG, "sibling repair: $roomId busy ($r) — next rescan")
+                    is MlsRemove.NotMember -> Log.i(TAG, "sibling repair: $target already off $roomId")
+                }
+            }
+        }
+        if (changed) {
+            settings.siblingRepairState = SiblingRepair.encodeState(state)
+            settings.siblingQueue = SelfService.encodeSiblingQueue(queue)
+        }
     }
 
     /** 설정 「빠진 방 다시 찾기」(#616, 기본 켜짐). 화면 스레드에서 불러도 된다(저장만). */

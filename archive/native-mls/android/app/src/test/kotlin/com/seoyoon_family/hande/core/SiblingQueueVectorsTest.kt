@@ -6,6 +6,10 @@ package com.seoyoon_family.hande.core
 
 import com.seoyoon_family.hande.mls.MlsMe
 import com.seoyoon_family.hande.mls.MlsMeDevice
+import com.seoyoon_family.hande.mls.MlsRepairMark
+import com.seoyoon_family.hande.mls.MlsRepairState
+import com.seoyoon_family.hande.mls.MlsSiblingWelcome
+import com.seoyoon_family.hande.mls.siblingRepairConstants
 import com.seoyoon_family.hande.mls.siblingRescanConstants
 import java.io.File
 import kotlin.test.Test
@@ -148,5 +152,39 @@ class SiblingQueueVectorsTest {
             assertEquals(c["expect"], SiblingRescan.encodeState(s), "${c["name"]}")
             assertEquals(s, SiblingRescan.decodeState(SiblingRescan.encodeState(s)), "round trip ${c["name"]}")
         }
+    }
+
+    private fun repairState(v: Any?): MlsRepairState =
+        MlsRepairState(((v as Map<*, *>)["marks"] as List<*>).map { val m = it as Map<*, *>; MlsRepairMark(key = m["key"] as String, at = num(m["at"])) })
+
+    private fun repairMap(s: MlsRepairState): Map<String, Any?> = mapOf("marks" to s.marks.map { mapOf("key" to it.key, "at" to it.at) })
+
+    @Test fun repairRules() {
+        val c = fixture["constants"] as Map<*, *>
+        val core = siblingRepairConstants()
+        assertEquals(num(c["repair_min_age_ms"]), SiblingRepair.MIN_AGE_MS)
+        assertEquals(num(c["repair_interval_ms"]), SiblingRepair.INTERVAL_MS)
+        assertEquals(c["repair_origin"], SiblingRepair.ORIGIN)
+        assertEquals(SiblingRepair.MIN_AGE_MS, core.minAgeMs)
+        assertEquals(SiblingRepair.INTERVAL_MS, core.intervalMs)
+        assertEquals(SiblingRepair.ORIGIN, core.origin)
+        for (k in cases("repair_allowed")) assertEquals(k["expect"], SiblingRepair.allowed(me(k), k["device"] as String), "${k["name"]}")
+        for (k in cases("stuck_rooms")) {
+            val rooms = (k["rooms"] as List<*>).map {
+                val r = it as Map<*, *>
+                SelfService.RoomView(
+                    room = r["room"] as String, joined = r["joined"] as Boolean, halted = r["halted"] as Boolean,
+                    pending = r["pending"] as Boolean, roster = (r["roster"] as List<*>?)?.map { m -> m as String },
+                )
+            }
+            val welcomes = (k["welcomes"] as List<*>).map { val w = it as Map<*, *>; MlsSiblingWelcome(room = w["room"] as String, createdAtMs = num(w["created_at_ms"])) }
+            assertEquals(k["expect"], SiblingRepair.stuckRoomsMs(rooms, k["target"] as String, welcomes, repairState(k["state"]), num(k["now"])), "${k["name"]}")
+        }
+        for (k in cases("repair_mark")) {
+            val got = SiblingRepair.mark(repairState(k["state"]), k["target"] as String, k["room"] as String, num(k["now"]))
+            assertEquals(k["expect"], repairMap(got), "${k["name"]}")
+        }
+        for (k in cases("repair_state_text_decode")) assertEquals(k["expect"], repairMap(SiblingRepair.decodeState(k["text"] as String?)), "${k["name"]}")
+        for (k in cases("repair_state_text_encode")) assertEquals(k["expect"], SiblingRepair.encodeState(repairState(k["state"])), "${k["name"]}")
     }
 }

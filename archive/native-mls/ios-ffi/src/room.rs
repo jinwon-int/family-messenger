@@ -196,6 +196,21 @@ pub enum MlsInvite {
     Raced,
 }
 
+/// `MlsRoom::remove` 의 결과(#875 — 봇 steward `remove` 와 같은 순서). 호스트는 `Pending`·`Raced` 를 「다음 틱에 다시」로 다룬다.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum MlsRemove {
+    /// commit 이 올라가 이 `poll` 에서 echo 가 merge 됐다 — 대상은 이 방의 명단에서 빠졌다.
+    Removed { commit_seq: i64, epoch: i64 },
+    /// commit 은 올라갔지만 이 페이지에 echo 가 없었다 — 다음 `poll` 이 merge 한다.
+    Posted { commit_seq: i64 },
+    /// 이 기기의 commit 이 아직 echo 되지 않았다(또는 초대 Welcome 이 대기 중) — `poll` 뒤 다시.
+    Pending,
+    /// 409 cas_mismatch: 방이 먼저 바뀌었다 — 대기 commit 을 버렸다(`clear_pending`), 다음 `poll` 뒤 다시.
+    Raced,
+    /// 대상이 이 방의 MLS 명단에 없다(이미 빠졌다).
+    NotMember,
+}
+
 /// HTTP 바이트 전송(호스트 구현). `url` = base + 경로·쿼리, `headers` 에는 CF Access 헤더가 들어 있을 수 있다.
 #[uniffi::export(foreign)]
 pub trait HttpTransport: Send + Sync {
@@ -456,6 +471,12 @@ impl MlsRoom {
         inner.device.export_state(&self.identity).map_err(|e| mls_err(rejected(e)))
     }
 
+    /// 이 기기의 commit(초대·내보내기)이 아직 echo 로 merge 되지 않았나(#875 — `remove` 가 `Posted` 로 끝난 방을 호스트가
+    /// 「내 commit 대기」로 보게). 초대 Welcome 대기는 `sync_state().pending_invite` 로 따로 보인다.
+    pub fn has_pending_commit(&self) -> Result<bool, RoomError> {
+        Ok(self.lock()?.device.has_pending())
+    }
+
     pub fn sync_state(&self) -> Result<RoomSyncState, RoomError> {
         let inner = self.lock()?;
         Ok(snapshot_state(&inner))
@@ -533,6 +554,64 @@ impl MlsRoom {
         Ok(match inner.last_welcome.take() {
             Some(w) => MlsInvite::Invited { commit_seq: posted.seq, welcome_seq: w.seq, epoch: w.epoch },
             None => MlsInvite::Posted { commit_seq: posted.seq },
+        })
+    }
+
+    /// 형제 기기 내보내기(#875 — 멈춘 참여 복구의 첫 절반, 봇 steward `remove` 와 같은 순서): 명단에서 대상의 키를 찾아
+    /// `remove_pending` → 상태 영속 → commit 게시(커밋 뒤 멤버 목록 포함, #900) → `poll`(자기 echo 를 merge).
+    /// 409 cas_mismatch 면 대기 commit 을 버리고 `Raced`, 그 밖의 게시 실패도 대기 commit 을 버리고 오류. 자기 자신·참여 전·정지된 방은 `Host` 오류.
+    pub fn remove(&self, target: String) -> Result<MlsRemove, RoomError> {
+        require_identifier("target", &target)?;
+        if target == self.identity {
+            return Err(RoomError::Host { reason: "cannot remove this device".into() });
+        }
+        let mut inner = self.lock()?;
+        if inner.sync.halted {
+            return Err(RoomError::Host { reason: "room is halted".into() });
+        }
+        if !inner.sync.joined {
+            return Err(RoomError::Host { reason: "not a member of this room yet".into() });
+        }
+        if inner.device.has_pending() || inner.pending_invite.is_some() {
+            return Ok(MlsRemove::Pending);
+        }
+        let frame = inner.device.members().map_err(|e| mls_err(rejected(e)))?;
+        let roster = native_mls_host::policy::parse_roster(&frame).ok_or_else(|| RoomError::Mls { reason: "roster frame".into() })?;
+        let Some(key) = roster.into_iter().find(|m| m.id == target).map(|m| m.key) else {
+            return Ok(MlsRemove::NotMember);
+        };
+        let commit = dispatch_guarded(&mut inner.device, &self.identity, "remove_pending", &key).map_err(mls_err)?;
+        // 대기 commit 상태는 commit 이 나가기 전에 디스크에(persist-before-bytes-leave — `invite` 와 같다).
+        inner.sync.dirty = true;
+        {
+            let mut host = Host { inner: &mut inner, identity: &self.identity, file_v2: false };
+            room::SendHost::persist(&mut host).map_err(relay_err)?;
+        }
+        let posted = match Self::post_kind_in(&mut inner, &self.identity, "commit", commit, Vec::new()) {
+            Ok(posted) => posted,
+            Err(err) => {
+                let _ = dispatch_guarded(&mut inner.device, &self.identity, "clear_pending", &[]);
+                inner.sync.dirty = true;
+                let mut host = Host { inner: &mut inner, identity: &self.identity, file_v2: false };
+                room::SendHost::persist(&mut host).map_err(relay_err)?;
+                return match err {
+                    RelayError::Api { status: 409, ref code } if code == "cas_mismatch" => Ok(MlsRemove::Raced),
+                    other => Err(relay_err(other)),
+                };
+            }
+        };
+        inner.sync.dirty = true;
+        {
+            let mut host = Host { inner: &mut inner, identity: &self.identity, file_v2: false };
+            room::poll(&mut host, &self.identity).map_err(relay_err)?;
+            if host.sync().dirty {
+                room::SendHost::persist(&mut host).map_err(relay_err)?;
+            }
+        }
+        Ok(if inner.device.has_pending() {
+            MlsRemove::Posted { commit_seq: posted.seq }
+        } else {
+            MlsRemove::Removed { commit_seq: posted.seq, epoch: inner.sync.epoch }
         })
     }
 

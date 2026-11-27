@@ -416,6 +416,21 @@ impl MlsLobby {
             .collect())
     }
 
+    /// #875: **다른** 기기(같은 subject 의 형제 기기)를 대상으로 한, 그 기기의 durable cursor 가 아직 지나지 않은 Welcome
+    /// (`GET /v2/lobby/welcomes?device=`, 릴레이 `bindDevice` 는 같은 subject 의 활성 기기를 허용). 읽기 전용 — 이 기기의
+    /// 로비 키 기록(`welcomes` 의 `note_waiting`)은 건드리지 않는다. `created_at` 은 초.
+    pub fn welcomes_for(&self, device: String) -> Result<Vec<MlsLobbyWelcome>, RoomError> {
+        require_identifier("device", &device)?;
+        let inner = self.lock()?;
+        let list = inner.client.lobby_welcomes(&device).map_err(relay_err)?;
+        Ok(list
+            .into_iter()
+            .map(|w| MlsLobbyWelcome {
+                room: w.room, seq: w.seq, epoch: w.epoch, created_at: w.created_at, from: w.from, key_package_ref: w.key_package_ref,
+            })
+            .collect())
+    }
+
     // ---- #574 기기 셀프서비스 ----
 
     /// `GET /v2/me`: 검증된 subject(등록 JSON 의 `subject`)·정책 revision·내 기기 전부. 401 → 세션 필요, 403 → (엣지) 허용되지

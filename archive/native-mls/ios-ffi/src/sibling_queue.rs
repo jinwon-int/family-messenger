@@ -211,3 +211,92 @@ pub fn sibling_rescan_turn(
         state: state_from(turn.state),
     }
 }
+
+// ---- #875 (#366 3h-b 1차): 명단에는 있는데 참여하지 못한 형제 기기 복구(경우 A) ----
+
+/// 복구 상수 — Android `SiblingRepair` 가 같은 값을 둔다(`SiblingQueueVectorsTest` 가 고정).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MlsSiblingRepairConstants {
+    /// Welcome 이 이만큼 소비되지 않은 채 남아야 멈춤으로 본다, ms.
+    pub min_age_ms: i64,
+    /// 같은 (형제 기기, 방) 재복구까지 최소 간격, ms.
+    pub interval_ms: i64,
+    /// 복구가 넣은 대기열 항목의 출처 표시.
+    pub origin: String,
+}
+
+#[uniffi::export]
+pub fn sibling_repair_constants() -> MlsSiblingRepairConstants {
+    MlsSiblingRepairConstants {
+        min_age_ms: core::REPAIR_MIN_AGE_MS,
+        interval_ms: core::REPAIR_INTERVAL_MS,
+        origin: core::REPAIR_ORIGIN.to_owned(),
+    }
+}
+
+/// 형제 기기를 대상으로 남은 Welcome 한 건(`created_at_ms` = 릴레이 `created_at` 초 × 1000).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MlsSiblingWelcome {
+    pub room: String,
+    pub created_at_ms: i64,
+}
+
+/// 복구 기록 한 건: `key` = `target|room`, `at` = 마지막으로 내보낸 시각(ms).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MlsRepairMark {
+    pub key: String,
+    pub at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MlsRepairState {
+    pub marks: Vec<MlsRepairMark>,
+}
+
+fn repair_of(s: &MlsRepairState) -> core::RepairState {
+    core::RepairState { marks: s.marks.iter().map(|m| core::RepairMark { key: m.key.clone(), at: m.at }).collect() }
+}
+
+fn repair_from(s: core::RepairState) -> MlsRepairState {
+    MlsRepairState { marks: s.marks.into_iter().map(|m| MlsRepairMark { key: m.key, at: m.at }).collect() }
+}
+
+/// 이 기기가 복구를 해도 되나(체인의 내 기록이 활성 · registrar).
+#[uniffi::export]
+pub fn sibling_repair_allowed(me: Option<MlsMe>, device: String) -> bool {
+    core::may_repair(me_of(&me).as_ref(), &device)
+}
+
+/// 형제 기기 `target` 을 내보내고 다시 초대할 방(경우 A, 방마다 24시간 한 번).
+#[uniffi::export]
+pub fn sibling_repair_stuck_rooms(
+    rooms: Vec<crate::MlsInviteRoom>,
+    target: String,
+    welcomes: Vec<MlsSiblingWelcome>,
+    state: MlsRepairState,
+    now: i64,
+) -> Vec<String> {
+    let rooms: Vec<InviteRoom> = rooms
+        .into_iter()
+        .map(|r| InviteRoom { room: r.room, joined: r.joined, halted: r.halted, pending: r.pending, roster: r.roster })
+        .collect();
+    let welcomes: Vec<core::SiblingWelcome> =
+        welcomes.into_iter().map(|w| core::SiblingWelcome { room: w.room, created_at_ms: w.created_at_ms }).collect();
+    core::stuck_sibling_rooms(&rooms, &target, &welcomes, &repair_of(&state), now)
+}
+
+/// (target, room) 을 `now` 에 복구했다고 적는다(24시간 지난 기록은 걷어 낸다).
+#[uniffi::export]
+pub fn sibling_repair_mark(state: MlsRepairState, target: String, room: String, now: i64) -> MlsRepairState {
+    repair_from(core::mark_repaired(&repair_of(&state), &target, &room, now))
+}
+
+#[uniffi::export]
+pub fn sibling_repair_decode_state(text: Option<String>) -> MlsRepairState {
+    repair_from(core::decode_repair_state(text.as_deref()))
+}
+
+#[uniffi::export]
+pub fn sibling_repair_encode_state(state: MlsRepairState) -> String {
+    core::encode_repair_state(&repair_of(&state))
+}
