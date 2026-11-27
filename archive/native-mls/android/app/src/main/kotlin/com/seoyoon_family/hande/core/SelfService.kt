@@ -3,7 +3,9 @@
 // `MlsRoom.invite`)가 하고, 여기는 **누가·무엇을** 할 수 있는지만 정한다.
 // #366 3g: 역할·승인·형제 판정(`isRegistrar`·`isActive`·`actorHasRegistrar`·`canApprove`·`isSibling`·`candidatesFor`·`nextRoles`·
 // `rolesActions`·`siblingInviteRooms`·`enrollModeFrom`)은 host-core `self_service` 를 부른다(공용 벡터 `self-service-vectors.json`,
-// `SelfServiceVectorsTest`). 형제 초대 대기열·재탐색은 아직 여기(3h 후보).
+// `SelfServiceVectorsTest`). #366 3h-a: 형제 초대 대기열 규칙(`decode/encodeSiblingQueue`·`enqueueSiblingInvites`·`splitSiblingQueue`·
+// `budget`·`nextSiblingEntry`)과 [SiblingRescan](`decode/encodeState`·`siblings`·`due`·`turn`)은 host-core `sibling_queue` 를 부른다
+// (공용 벡터 `sibling-queue-vectors.json`, `SiblingQueueVectorsTest`). 방마다 초대를 부르는 반복(`siblingInviteTurn`)은 여기 남는다.
 //
 // 서버 계약(server/devices.go · me.go · lobby.go, DEVICES-V4 「셀프서비스 라우트」):
 //   누가 서명할 수 있나(devicepolicy.VerifyApproval/VerifyRoles): 이 기기가 활성이고, (registrar 이거나 같은 actor 에 활성 registrar 가 없을 때).
@@ -15,6 +17,11 @@ import com.seoyoon_family.hande.mls.MlsEnrollMode
 import com.seoyoon_family.hande.mls.MlsInviteRoom
 import com.seoyoon_family.hande.mls.MlsMe
 import com.seoyoon_family.hande.mls.MlsMeDevice
+import com.seoyoon_family.hande.mls.MlsRescanExcluded
+import com.seoyoon_family.hande.mls.MlsRescanPending
+import com.seoyoon_family.hande.mls.MlsRescanRoom
+import com.seoyoon_family.hande.mls.MlsRescanState
+import com.seoyoon_family.hande.mls.MlsSiblingInvite
 import com.seoyoon_family.hande.mls.selfServiceActorHasRegistrar
 import com.seoyoon_family.hande.mls.selfServiceCanApprove
 import com.seoyoon_family.hande.mls.selfServiceCandidatesFor
@@ -25,6 +32,17 @@ import com.seoyoon_family.hande.mls.selfServiceIsSibling
 import com.seoyoon_family.hande.mls.selfServiceNextRoles
 import com.seoyoon_family.hande.mls.selfServiceRolesActions
 import com.seoyoon_family.hande.mls.selfServiceSiblingInviteRooms
+import com.seoyoon_family.hande.mls.siblingInviteBudget
+import com.seoyoon_family.hande.mls.siblingQueueDecode
+import com.seoyoon_family.hande.mls.siblingQueueEncode
+import com.seoyoon_family.hande.mls.siblingQueueEnqueue
+import com.seoyoon_family.hande.mls.siblingQueueNextEntry
+import com.seoyoon_family.hande.mls.siblingQueueSplit
+import com.seoyoon_family.hande.mls.siblingRescanDecodeState
+import com.seoyoon_family.hande.mls.siblingRescanDue
+import com.seoyoon_family.hande.mls.siblingRescanEncodeState
+import com.seoyoon_family.hande.mls.siblingRescanSiblings
+import com.seoyoon_family.hande.mls.siblingRescanTurn
 
 object SelfService {
     const val ROLE_REGISTRAR = "registrar"
@@ -164,50 +182,36 @@ object SelfService {
 
     private val IDENT = Regex("^[A-Za-z0-9_-]{1,64}$")
 
-    fun decodeSiblingQueue(text: String?): List<SiblingInvite> {
-        if (text.isNullOrBlank()) return emptyList()
-        return text.lines().mapNotNull { line ->
-            val parts = line.split('|')
-            if (parts.size != 3 && parts.size != 6) return@mapNotNull null
-            val target = parts[0].takeIf { IDENT.matches(it) } ?: return@mapNotNull null
-            val since = parts[1].toLongOrNull() ?: return@mapNotNull null
-            val rooms = parts[2].split(',').filter { IDENT.matches(it) }
-            if (parts.size == 3) return@mapNotNull SiblingInvite(target, rooms, since)
-            fun optLong(s: String): Pair<Boolean, Long?> = if (s.isEmpty()) true to null else s.toLongOrNull().let { (it != null) to it }
-            val (okP, progress) = optLong(parts[3])
-            val (okR, recheckAt) = optLong(parts[4])
-            if (!okP || !okR) return@mapNotNull null
-            val origin = parts[5].takeIf { it.isNotEmpty() }
-            if (origin != null && !IDENT.matches(origin)) return@mapNotNull null
-            SiblingInvite(target, rooms, since, progress, recheckAt, origin)
-        }
-    }
+    private fun SiblingInvite.toMls() = MlsSiblingInvite(
+        target = target, rooms = rooms, since = since, progress = progress, recheckAt = recheckAt, origin = origin,
+    )
+    private fun MlsSiblingInvite.toApp() = SiblingInvite(target, rooms, since, progress, recheckAt, origin)
 
-    fun encodeSiblingQueue(queue: List<SiblingInvite>): String =
-        queue.joinToString("\n") {
-            val base = "${it.target}|${it.since}|${it.rooms.joinToString(",")}"
-            if (it.progress == null && it.recheckAt == null && it.origin == null) base
-            else "$base|${it.progress ?: ""}|${it.recheckAt ?: ""}|${it.origin ?: ""}"
-        }
+    /** 텍스트 저장값 → 대기열(코어 `decode_sibling_queue` — 깨진 줄은 버리고, 식별자가 아닌 방 ID 는 그 줄에서 뺀다). */
+    fun decodeSiblingQueue(text: String?): List<SiblingInvite> = siblingQueueDecode(text).map { it.toApp() }
+
+    fun encodeSiblingQueue(queue: List<SiblingInvite>): String = siblingQueueEncode(queue.map { it.toMls() })
 
     /** 대기열에 (target, rooms) 를 넣는다 — 같은 target 이 있으면 방을 합치고 시각·출처는 유지. 방이 없으면 그대로. */
-    fun enqueueSiblingInvites(queue: List<SiblingInvite>, target: String, rooms: List<String>, now: Long, origin: String? = null): List<SiblingInvite> {
-        val add = rooms.filter { it.isNotEmpty() }.distinct()
-        if (add.isEmpty()) return queue
-        val existing = queue.firstOrNull { it.target == target }
-        return if (existing != null) queue.map { if (it === existing) it.copy(rooms = (it.rooms + add).distinct()) else it }
-        else queue + SiblingInvite(target, add, now, origin = origin)
-    }
+    fun enqueueSiblingInvites(queue: List<SiblingInvite>, target: String, rooms: List<String>, now: Long, origin: String? = null): List<SiblingInvite> =
+        siblingQueueEnqueue(queue.map { it.toMls() }, target, rooms, now, origin).map { it.toApp() }
 
     /** 처리할 것(first)과 포기할 것(second, 마지막 진행 `progress` — 없으면 `since` — 부터 TTL 지남)으로 나눈다. */
     fun splitSiblingQueue(queue: List<SiblingInvite>, now: Long, ttl: Long = SIBLING_INVITE_TTL_MS): Pair<List<SiblingInvite>, List<SiblingInvite>> =
-        queue.partition { now - (it.progress ?: it.since) <= ttl }
+        siblingQueueSplit(queue.map { it.toMls() }, now, ttl).let { r -> r.live.map { it.toApp() } to r.expired.map { it.toApp() } }
 
     /**
      * #616: 이번 차례에 초대를 시도할 방 수. 방마다 형제 기기의 로비 키를 하나씩 쓰는데(상한 8), 17개 방을 한꺼번에 돌면 9번째부터
      * 「키 패키지 없음」만 쌓인다. `live` = 형제 기기 `GET /v2/lobby/status` — null(옛 릴레이·오류)이면 제한 없이 예전처럼.
      */
-    fun budget(live: Int?): Int = if (live == null) Int.MAX_VALUE else maxOf(0, live)
+    fun budget(live: Int?): Int = siblingInviteBudget(live)
+
+    /**
+     * 항목 하나의 차례 끝 → 다음 대기열 항목(남은 방이 없으면 null). 초대가 하나라도 성공했으면 `progress` = now(TTL 다시 시작),
+     * `starved`(로비가 비었고 성공 없음 — 호출자가 `starved && !progressed` 를 넘긴다)면 `recheckAt` = now + 1분, 아니면 지운다.
+     */
+    fun nextSiblingEntry(e: SiblingInvite, remaining: List<String>, now: Long, progressed: Boolean, starved: Boolean): SiblingInvite? =
+        siblingQueueNextEntry(e.toMls(), remaining, now, progressed, starved)?.toApp()
 
     /** 방 하나에 초대를 시도한 결과(허브가 코어 `MlsInvite`·`RoomException` 을 이 넷으로 옮긴다). */
     sealed class InviteOutcome {
@@ -255,14 +259,8 @@ object SelfService {
                 is InviteOutcome.Failed -> failed += room to r.reason
             }
         }
-        if (remaining.isEmpty()) return InviteTurn(null, invited, failed)
         val progressed = invited.isNotEmpty()
-        val next = e.copy(
-            rooms = remaining,
-            progress = if (progressed) now else e.progress,
-            recheckAt = if (starved && !progressed) now + SIBLING_LOBBY_RECHECK_MS else null,
-        )
-        return InviteTurn(next, invited, failed)
+        return InviteTurn(nextSiblingEntry(e, remaining, now, progressed, starved && !progressed), invited, failed)
     }
 
     // ---- 릴레이 응답 파싱(#616) ----
@@ -370,64 +368,26 @@ object SiblingRescan {
     /** false = 참여한 방 중 이번 틱에 동기화 안 된 방이 있어 아무것도 안 했다(상태 그대로, 다음 틱에). */
     data class Turn(val ready: Boolean, val enqueue: List<Pair<String, List<String>>>, val state: State)
 
-    private val IDENT = Regex("^[A-Za-z0-9_-]{1,64}$")
+    private fun State.toMls() = MlsRescanState(last = last, pending = pending.map { (k, v) -> MlsRescanPending(key = k, seen = v) })
+    private fun MlsRescanState.toApp() = State(last, pending.associateTo(LinkedHashMap<String, Long>()) { it.key to it.seen })
 
     /** 저장 형식(SharedPreferences `sibling_rescan`): 첫 줄 `last`(없으면 빈 줄), 그 뒤 줄마다 `target|room|seenMs`. 깨진 값은 빈 상태·깨진 줄은 버린다. */
-    fun decodeState(text: String?): State {
-        if (text.isNullOrEmpty()) return State()
-        val lines = text.split('\n')
-        val head = lines.first()
-        val last = if (head.isEmpty()) null else head.toLongOrNull() ?: return State()
-        val pending = LinkedHashMap<String, Long>()
-        for (line in lines.drop(1)) {
-            val p = line.split('|')
-            if (p.size != 3 || !IDENT.matches(p[0]) || !IDENT.matches(p[1])) continue
-            val seen = p[2].toLongOrNull() ?: continue
-            pending["${p[0]}|${p[1]}"] = seen
-        }
-        return State(last, pending)
-    }
+    fun decodeState(text: String?): State = siblingRescanDecodeState(text).toApp()
 
-    fun encodeState(state: State): String =
-        (listOf(state.last?.toString() ?: "") + state.pending.map { (k, v) -> "$k|$v" }).joinToString("\n")
+    fun encodeState(state: State): String = siblingRescanEncodeState(state.toMls())
 
     /** 내 actor 의 다른 활성 기기 ID(정렬). 내 기록이 체인에 없거나 활성이 아니면 빈 목록. */
-    fun siblings(me: MlsMe?, device: String): List<String> {
-        val devices = me?.devices.orEmpty()
-        val mine = devices.firstOrNull { it.deviceId == device } ?: return emptyList()
-        if (!SelfService.isActive(mine) || mine.actor.isEmpty()) return emptyList()
-        return devices.filter { it.deviceId != device && it.actor == mine.actor && SelfService.isActive(it) }.map { it.deviceId }.sorted()
-    }
+    fun siblings(me: MlsMe?, device: String): List<String> = siblingRescanSiblings(me, device)
 
     /** 지금 재탐색할 차례인가 — 한 번도 안 했거나 간격이 지났거나, 미뤄 둔 방의 30분이 찼을 때. */
-    fun due(state: State, now: Long): Boolean {
-        val last = state.last ?: return true
-        if (now - last >= INTERVAL_MS) return true
-        return state.pending.values.any { now - it >= DEFERRAL_MS }
-    }
+    fun due(state: State, now: Long): Boolean = siblingRescanDue(state.toMls(), now)
 
     /** 재탐색 한 번(순수). `excluded[target]` 이 null(옛 릴레이·조회 없음)이면 그 기기는 건너뛴다. */
     fun turn(rooms: List<SelfService.RoomView>, device: String, siblings: List<String>, excluded: Map<String, List<String>?>, state: State, now: Long): Turn {
-        if (rooms.any { it.joined && !it.synced }) return Turn(false, emptyList(), state)
-        val mine = (listOf(device) + siblings).toSet()
-        val pending = LinkedHashMap<String, Long>()
-        val enqueue = ArrayList<Pair<String, List<String>>>()
-        for (target in siblings) {
-            val skipped = excluded[target] ?: continue   // fail-closed
-            val out = skipped.toSet()
-            val take = ArrayList<String>()
-            for (roomId in SelfService.siblingInviteRooms(rooms, target)) {
-                if (roomId in out) continue
-                val view = rooms.firstOrNull { it.room == roomId } ?: continue
-                val present = view.roster.orEmpty().filter { it in mine }
-                val leader = (listOf(device) + present).minOrNull() ?: device
-                if (leader == device) { take += roomId; continue }
-                val key = "$target|$roomId"
-                val seen = state.pending[key] ?: now
-                if (now - seen >= DEFERRAL_MS) take += roomId else pending[key] = seen
-            }
-            if (take.isNotEmpty()) enqueue += target to take
-        }
-        return Turn(true, enqueue, State(now, pending))
+        val t = siblingRescanTurn(
+            rooms.map { MlsRescanRoom(room = it.room, joined = it.joined, halted = it.halted, pending = it.pending, roster = it.roster, synced = it.synced) },
+            device, siblings, excluded.map { (k, v) -> MlsRescanExcluded(target = k, rooms = v) }, state.toMls(), now,
+        )
+        return Turn(t.ready, t.enqueue.map { it.target to it.rooms }, t.state.toApp())
     }
 }

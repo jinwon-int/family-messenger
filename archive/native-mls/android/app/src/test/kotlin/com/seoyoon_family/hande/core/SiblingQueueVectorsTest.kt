@@ -101,6 +101,10 @@ class SiblingQueueVectorsTest {
             val want = optNum(c["expect"])?.toInt() ?: Int.MAX_VALUE
             assertEquals(want, SelfService.budget(optNum(c["live"])?.toInt()), "${c["name"]}")
         }
+        for (c in cases("next_entry")) {
+            val got = SelfService.nextSiblingEntry(entry(c["entry"]), strings(c["remaining"]), num(c["now"]), c["progressed"] as Boolean, c["starved"] as Boolean)
+            assertEquals(c["expect"], entryMap(got), "${c["name"]}")
+        }
     }
 
     @Test fun queueTextFormat() {
