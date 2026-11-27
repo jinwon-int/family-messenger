@@ -58,6 +58,7 @@ func main() {
 	wellKnownMinIOS := flag.String("well-known-min-ios", "", "minimum iOS app version this relay accepts (e.g. 0.1.0), advertised in /.well-known/hande")
 	wellKnownMinAndroid := flag.String("well-known-min-android", "", "minimum Android app version this relay accepts, advertised in /.well-known/hande")
 	linkPreview := flag.Bool("link-preview", false, "enable the link preview proxy GET /v2/preview/sites, /v2/preview and /v2/preview/image (#683, #690 v2): the relay fetches og: tags only from the canonical pages of the registry's preview sites (X, YouTube, Naver News, Wikipedia ko/en, GitHub, BBC) and images only from their image hosts, behind caller authentication. Off = routes absent (404). The relay then sees which pages are previewed (never logged)")
+	fileV1RetireAtFlag := flag.String("file-v1-retire-at", fileV1RetireAt.Format(time.RFC3339), "from this RFC 3339 instant, new kind=application events whose client_id starts with file-v1- are refused 410 file_v1_retired (#499 decision 6); stored v1 rows stay readable. \"off\" = never (legacy relay-app acceptance smoke only)")
 	accessMaxLifetimeSeconds := flag.Int64("access-max-lifetime-seconds", 0, "override (tighten) the maximum accepted JWT lifetime in seconds (exp-now and exp-iat; default 31 days = the longest CF Access session; the account's apps use 730h)")
 	flag.Parse()
 
@@ -95,6 +96,12 @@ func main() {
 		log.Printf("WARNING: -access-mode disabled: NO caller authentication, any client may act as any device. Local development only.")
 	default:
 		log.Fatalf("-access-mode must be %q or %q", accessModeRequired, accessModeDisabled)
+	}
+
+	// #499: a bad -file-v1-retire-at stops the relay before any state.
+	fileV1RetireAtUnix, err := parseFileV1RetireAt(*fileV1RetireAtFlag)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	db, err := openStore(*dataDir)
@@ -155,6 +162,12 @@ func main() {
 	}
 	if *hardMaxEpochs > 0 {
 		pol.CommitWelcomeHardMaxEpochs = *hardMaxEpochs
+	}
+	pol.FileV1RetireAtUnix = fileV1RetireAtUnix
+	if pol.FileV1RetireAtUnix == 0 {
+		log.Printf("WARNING: -file-v1-retire-at off: new file-v1 attachment posts are still accepted (#499)")
+	} else {
+		log.Printf("file-v1 posts refused (410 file_v1_retired) from %s", time.Unix(pol.FileV1RetireAtUnix, 0).UTC().Format(time.RFC3339))
 	}
 
 	relay := &relay{db: db, policy: pol, devices: devices, access: access}
