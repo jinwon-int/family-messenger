@@ -15,6 +15,7 @@
 
 use crate::api::BotError;
 use native_mls_host::http::HttpError;
+use native_mls_host::room::{DivergedReason, RelayDiverged};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -36,6 +37,8 @@ pub struct RoomHealth {
     pub halted: bool,
     /// #814: the relay answers 404 `no_such_room` for a room it showed before.
     pub relay_missing: bool,
+    /// #813: the relay is behind this device's MLS state (host-core `RoomSync::diverged`).
+    pub relay_diverged: Option<RelayDiverged>,
     pub pending: bool,
     pub cursor: i64,
     pub epoch: i64,
@@ -50,7 +53,7 @@ struct Key {
     relay_up: bool,
     class: Option<&'static str>,
     last_403: Option<(String, u64)>,
-    rooms: Vec<(String, bool, &'static str, bool, bool, bool)>,
+    rooms: Vec<(String, bool, &'static str, bool, bool, Option<DivergedReason>, bool)>,
 }
 
 pub struct Health {
@@ -150,7 +153,10 @@ impl Health {
             relay_up: self.relay_up,
             class: self.last_error_class,
             last_403: self.last_403.clone(),
-            rooms: rooms.iter().map(|r| (r.room.clone(), r.joined, r.mode, r.halted, r.relay_missing, r.pending)).collect(),
+            rooms: rooms
+                .iter()
+                .map(|r| (r.room.clone(), r.joined, r.mode, r.halted, r.relay_missing, r.relay_diverged.as_ref().map(|d| d.reason), r.pending))
+                .collect(),
         }
     }
 
@@ -175,7 +181,8 @@ impl Health {
             "rooms": rooms.iter().map(|r| serde_json::json!({
                 "room": r.room, "joined": r.joined, "mode": r.mode, "halted": r.halted,
                 "halt_reason": if r.halted { r.marker.as_deref().and_then(halt_reason) } else { None },
-                "relay_missing": r.relay_missing, "pending": r.pending, "cursor": r.cursor, "epoch": r.epoch,
+                "relay_missing": r.relay_missing, "relay_diverged": diverged_json(&r.relay_diverged),
+                "pending": r.pending, "cursor": r.cursor, "epoch": r.epoch,
             })).collect::<Vec<_>>(),
         })
     }
@@ -200,6 +207,15 @@ impl Health {
     /// True the first time only: a broken health path is logged once.
     pub fn announce_failure(&mut self) -> bool {
         !std::mem::replace(&mut self.failure_announced, true)
+    }
+}
+
+/// #813: `relay_diverged` as the health file, `room status` and the
+/// `status`/`relay_diverged` lines show it — `null` while the relay is in step.
+pub fn diverged_json(diverged: &Option<RelayDiverged>) -> serde_json::Value {
+    match diverged {
+        Some(d) => serde_json::json!({ "reason": d.reason.as_str(), "relay_epoch": d.relay_epoch, "local_epoch": d.local_epoch }),
+        None => serde_json::Value::Null,
     }
 }
 
@@ -254,7 +270,7 @@ mod tests {
     }
 
     fn room(name: &str, halted: bool, marker: Option<PathBuf>) -> RoomHealth {
-        RoomHealth { room: name.into(), joined: true, mode: "agent", halted, relay_missing: false, pending: false, cursor: 7, epoch: 2, marker }
+        RoomHealth { room: name.into(), joined: true, mode: "agent", halted, relay_missing: false, relay_diverged: None, pending: false, cursor: 7, epoch: 2, marker }
     }
 
     fn io(kind: std::io::ErrorKind) -> BotError { BotError::Http(HttpError::Io(std::io::Error::from(kind))) }
@@ -295,7 +311,7 @@ mod tests {
         assert!(body["pid"].is_u64());
         assert_eq!(body["relay"], serde_json::json!({"state":"unreachable","since":110,"attempts":3,"last_error_class":"timeout","outages":1}));
         assert_eq!(body["access"]["last_403"], serde_json::json!({"code":"device_subject_mismatch","at":105}));
-        assert_eq!(body["rooms"][0], serde_json::json!({"room":"family","joined":true,"mode":"agent","halted":true,"halt_reason":"history_gap","relay_missing":false,"pending":false,"cursor":7,"epoch":2}));
+        assert_eq!(body["rooms"][0], serde_json::json!({"room":"family","joined":true,"mode":"agent","halted":true,"halt_reason":"history_gap","relay_missing":false,"relay_diverged":null,"pending":false,"cursor":7,"epoch":2}));
         assert_eq!(body["rooms"][1]["halt_reason"], serde_json::Value::Null);
         let keys: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
         assert_eq!(keys.len(), 8, "{keys:?}");
@@ -350,6 +366,11 @@ mod tests {
         rooms[0].relay_missing = false;
         assert!(h.observe(&rooms, 142, t0 + Duration::from_secs(6) + HEARTBEAT).unwrap(), "its return writes");
         assert_eq!(read(h.path())["rooms"][0]["relay_missing"], false);
+        // #813: a divergence verdict writes at once; `null` while in step.
+        assert_eq!(read(h.path())["rooms"][0]["relay_diverged"], serde_json::Value::Null);
+        rooms[0].relay_diverged = Some(RelayDiverged { reason: DivergedReason::EpochRegressed, relay_epoch: 2, local_epoch: 3 });
+        assert!(h.observe(&rooms, 143, t0 + Duration::from_secs(7) + HEARTBEAT).unwrap(), "relay_diverged writes");
+        assert_eq!(read(h.path())["rooms"][0]["relay_diverged"], serde_json::json!({"reason": "epoch_regressed", "relay_epoch": 2, "local_epoch": 3}));
     }
 
     /// Atomic: no tmp left behind, mode 0640, the old file replaced whole.

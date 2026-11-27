@@ -1806,3 +1806,35 @@ fn durable_lane_export_identity_shares_signer_across_stores() {
     let room3 = Session::open_identity("owner-web-1", &pk, fmt, &again).unwrap();
     assert!(room3.group_id().is_empty() && room3.key_packages_outstanding() == 0);
 }
+
+/// #813: `epoch()` is the group's MLS epoch, and it moves only when a commit
+/// merges — an own commit stays pending (same epoch) until `merge_pending`,
+/// which the relay flow calls on the relay's echo, so a well-behaved relay is
+/// never behind it. A device that applied its own removal no longer lists
+/// itself (host-core's 403 `not_a_member` rule relies on that).
+#[test]
+fn epoch_moves_only_on_merge_and_a_removed_device_drops_itself() {
+    let mut a1 = Device::new("a:1").unwrap();
+    let mut a2 = Device::new("a:2").unwrap();
+    assert_eq!(a1.epoch(), None, "no group yet");
+    a1.create().unwrap();
+    assert_eq!(a1.epoch(), Some(0));
+    let framed = a1.invite_with_commit(&a2.key_package().unwrap()).unwrap();
+    assert_eq!(a1.epoch(), Some(0), "a pending own commit does not move the epoch");
+    a1.clear_pending().unwrap();
+    assert_eq!(a1.epoch(), Some(0), "a 409 (clear_pending) keeps it");
+    let framed = { drop(framed); a1.invite_with_commit(&a2.key_package().unwrap()).unwrap() };
+    a1.merge_pending().unwrap();
+    assert_eq!(a1.epoch(), Some(1), "merged on the echo");
+    let n = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    a2.join(&framed[4 + n..]).unwrap();
+    assert_eq!(a2.epoch(), Some(1), "a joiner starts at the Welcome's epoch");
+
+    let commit = a1.remove_member_pending(&a2.public_key().unwrap()).unwrap();
+    a1.merge_pending().unwrap();
+    a2.stage_commit(&commit).unwrap();
+    a2.merge_staged().unwrap();
+    assert_eq!(a2.epoch(), Some(2));
+    let listed = a2.members().map(|f| roster(&f)).unwrap_or_default();
+    assert!(listed.iter().all(|(id, _)| id != "a:2"), "the removed device does not list itself: {listed:?}");
+}

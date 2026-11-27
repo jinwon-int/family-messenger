@@ -6,7 +6,7 @@ mod support;
 
 use std::sync::atomic::Ordering;
 
-use family_mls_ios_ffi::{MlsInvite, MlsRoom, RoomError, RoomEvent, SendResult};
+use family_mls_ios_ffi::{MlsInvite, MlsRoom, RelayDivergedState, RoomError, RoomEvent, SendResult};
 use support::{founded_pair, ok, Harness, Observer, BASE};
 
 #[test]
@@ -75,6 +75,35 @@ fn own_commit_merges_on_its_echo_and_the_peer_applies_it() {
     ok(third.poll(), "third reads");
     assert_eq!(peer_obs.texts().last().map(|t| t.2.as_str()), Some("all three"));
     assert_eq!(third_obs.texts().last().map(|t| t.2.as_str()), Some("all three"));
+}
+
+/// #813 1단계: commit 으로 세운 방(릴레이 epoch == MLS epoch)은 어긋남이 없고, 릴레이가 그 commit 앞으로 돌아가면(복원) 다음 `poll`
+/// 이 `epoch_regressed` 로 알린다 — 정지하지 않고, 보내기는 릴레이 epoch 로 그대로 된다.
+#[test]
+fn relay_behind_the_group_is_reported_not_halted() {
+    let h = Harness::new();
+    let (owner, _owner_obs) = h.room("owner-phone");
+    let (peer, peer_obs) = h.room("owner-pc");
+    ok(owner.dispatch("create".into(), Vec::new()), "create");
+    let kp = ok(peer.dispatch("key_package".into(), Vec::new()), "peer key package");
+    let framed = ok(owner.dispatch("invite_with_commit".into(), kp), "invite_with_commit");
+    let len = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
+    let (commit, welcome) = (framed[4..4 + len].to_vec(), framed[4 + len..].to_vec());
+    assert_eq!(ok(owner.post_commit(commit), "post commit").epoch, 1);
+    ok(owner.poll(), "own echo merges");
+    ok(owner.post_welcome(welcome, vec!["owner-pc".into()]), "post welcome");
+    ok(peer.poll(), "peer joins");
+    assert!(peer_obs.events().iter().any(|e| matches!(e, RoomEvent::Joined { .. })), "{:?}", peer_obs.events());
+    ok(owner.poll(), "owner in step");
+    assert_eq!(ok(owner.relay_diverged(), "owner"), None, "own commit merged on its echo");
+    assert_eq!(ok(peer.relay_diverged(), "peer"), None, "joined at the Welcome's epoch");
+
+    h.relay.rewind_epoch("room-a");
+    ok(owner.poll(), "owner after the restore");
+    let behind = RelayDivergedState { reason: "epoch_regressed".into(), relay_epoch: 0, local_epoch: 1 };
+    assert_eq!(ok(owner.relay_diverged(), "owner"), Some(behind));
+    assert!(!ok(owner.sync_state(), "sync").halted, "notify only");
+    assert!(matches!(ok(owner.send(b"still here".to_vec()), "send"), SendResult::Sent { .. }), "CAS uses the relay's epoch");
 }
 
 #[test]

@@ -131,6 +131,9 @@ export function createRoomSession({room, device, database, worker, relay, storag
     // #766 B: 이 방을 연 뒤 sync 시도가 한 번이라도 끝났다(성공·실패 무관 — 예전에 activate 가 끝난 시점). 저장분으로 먼저
     // 그린 방은 그 전까지 보내기·초대·제거·키 게시를 받지 않는다(requireOpen). 저장하지 않는다.
     live: false,
+    // #813 1단계: 이 기기 그룹의 MLS epoch(워커 결과 `epoch`, 그룹 없음 = null)와 「릴레이와 어긋남」 판정
+    // {reason: 'epoch_regressed'|'not_a_member', relay_epoch, local_epoch} 또는 null. 알리기만 한다. 저장하지 않는다(다음 sync 가 다시 판정).
+    mlsEpoch: null, diverged: null,
     waiting403: false, syncedAt: null, fingerprint: '', publicKey: '', revision: 0, historyOn: false};
   let attachments = null;
   let fileV2s = null;   // file-v2 송신 보관함(#499 3단계) — SEND_FILE_V2 또는 시험용 덮어쓰기일 때만 새 파일을 보낸다
@@ -148,7 +151,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     try { const v = JSON.parse(storage.getItem(stateKey()) || 'null'); if (v) Object.assign(S, v); } catch (_) { /* ignore */ }
   }
   function resetState() {
-    Object.assign(S, {joined: false, pending: false, pendingUncertain: null, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null, halted: null, epoch: 0, typing: [], readSeq: 0, muted: null});
+    Object.assign(S, {joined: false, pending: false, pendingUncertain: null, relaySeq: 0, roster: [], expectedRoster: null, pendingWelcome: null, halted: null, epoch: 0, typing: [], readSeq: 0, muted: null, mlsEpoch: null, diverged: null});
   }
 
   // ---- worker (multi-store: every message carries this room) ----
@@ -162,6 +165,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
     // (#370) acks only after its row is in the local history.
     const result = await op(worker, room, method, bytes, sequence, {deferAck, onAckError: error => log('ledger ack 실패:', error.message)});
     S.wcursor = result.cursor;
+    if (typeof result.epoch === 'string') S.mlsEpoch = /^\d{1,15}$/.test(result.epoch) ? Number(result.epoch) : null;
     return result;
   }
   let historyWarned = false;
@@ -247,6 +251,8 @@ export function createRoomSession({room, device, database, worker, relay, storag
     // 행이 생기지 않는 변화는 다음 watch 가 다시 알려 주지 않으므로, 버리면 60 s 안전망까지 화면이 멈춘다. 몰려도 추가 실행은 한 번.
     if (S.busy) { S.syncAgain = true; return undefined; }
     S.busy = true;
+    // #813 S1 은 GET 을 보내기 전의 MLS epoch 와 견준다 — 그 뒤 merge 는 이 페이지가 아니라 릴레이가 이미 받은 commit 의 것이다.
+    const localEpoch = S.joined ? S.mlsEpoch : null;
     try {
       const {status, body} = await relay.api('GET', path(`events?device=${encodeURIComponent(device)}&after=${S.relaySeq}`));
       if (status === 404 && body && body.error === 'no_such_room') { S.waiting403 = false; markSynced(); if (!quiet) log(strings.room.noRoomYet); return undefined; }
@@ -267,6 +273,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
       // Notification setting (mute.go): a GET that started before our own POST /mute answered must not undo it.
       if (typeof body.muted === 'boolean' && !muteBusy) S.muted = body.muted;
       if (body.first_seq > S.relaySeq + 1 && S.relaySeq > 0) notify(strings.room.historyGap(S.relaySeq + 1, body.first_seq - 1), 'warn');
+      noteEpoch(body.epoch, localEpoch);
       for (const ev of body.events) {
         const seqBefore = S.relaySeq;
         S.relaySeq = Math.max(S.relaySeq, ev.seq);
@@ -394,7 +401,8 @@ export function createRoomSession({room, device, database, worker, relay, storag
       }
       if (S.joined && S.relaySeq > 0 && body.cursor < S.relaySeq) {
         const ack = await relay.api('GET', path(`events?device=${encodeURIComponent(device)}&after=${S.relaySeq}&ack=${S.relaySeq}`));
-        if (ack.status !== 200 && !quiet) log('ack 실패:', describe(ack.status, ack.body));
+        if (ack.status === 403 && ack.body?.error === 'not_a_member') noteRefusal();   // #813 S3 — 이 페이지까지 읽은 뒤의 판정
+        else if (ack.status !== 200 && !quiet) log('ack 실패:', describe(ack.status, ack.body));
       }
       save(); markSynced(); changed();
       return undefined;
@@ -408,6 +416,28 @@ export function createRoomSession({room, device, database, worker, relay, storag
     on.message?.({kind: 'undecryptable', seq: ev.seq, sender: ev.device, client: '', text: '', ts: Number.isSafeInteger(ev.created_at) ? ev.created_at * 1000 : Date.now()});
   }
   function markSynced() { S.syncedAt = clock(true); on.synced?.(S.syncedAt); }
+  // ---- #813 1단계: 릴레이가 이 기기보다 뒤에 있다(오래된 스냅샷으로 복원) — host-core room.rs 와 같은 규칙, 알리기만 한다 ----
+  function setDiverged(next) {
+    if ((next?.reason ?? null) === (S.diverged?.reason ?? null)) { S.diverged = next; return; }
+    S.diverged = next;
+    log(next ? `릴레이와 어긋남(${next.reason}): 릴레이 epoch ${next.relay_epoch} · 이 기기 epoch ${next.local_epoch}` : '릴레이와 다시 맞음');
+    changed();
+  }
+  // S1: 릴레이 방 epoch < 이 기기 MLS epoch. 릴레이는 commit 하나에 epoch 를 하나만 올리고(CAS), 이 기기는 릴레이가 받은 commit 만
+  // merge 한다(남의 commit 은 로그에서 읽고, 내 commit 은 201 뒤 echo 에서 merge_pending — 409 면 clear_pending 으로 그대로). 그래서
+  // 정상 운영에서는 릴레이가 같거나 앞서고, 뒤에 있으면 저장된 commit 을 잃은 것이다.
+  function noteEpoch(relayEpoch, localEpoch) {
+    if (!Number.isSafeInteger(relayEpoch)) return;
+    if (localEpoch !== null && relayEpoch < localEpoch) setDiverged({reason: 'epoch_regressed', relay_epoch: relayEpoch, local_epoch: localEpoch});
+    else if (S.diverged?.reason === 'epoch_regressed') setDiverged(null);
+  }
+  // S3: 릴레이가 403 not_a_member 인데, 릴레이 로그를 따라잡은 이 기기 그룹은 아직 나를 멤버로 안다(사라진 commit 으로 들어온 기기).
+  // 그 사이 나를 뺀 commit 을 읽었으면 정지(removed_from_room)했거나 명단에 내가 없다 — 그것은 어긋남이 아니다. S1 이 먼저면 그대로 둔다.
+  function noteRefusal() {
+    if (!S.joined || S.halted || !S.roster.includes(device)) return false;
+    if (!S.diverged) setDiverged({reason: 'not_a_member', relay_epoch: S.epoch, local_epoch: S.mlsEpoch});
+    return true;
+  }
   // #261: a commit this device refuses to merge — loud, durable, final for this device.
   function halt(seq, committer, verdict) {
     S.halted = {seq, committer, reason: verdict.reason, detail: verdict.detail ?? '', at: clock(), removed: verdict.reason === 'removed_from_room'};
@@ -582,6 +612,7 @@ export function createRoomSession({room, device, database, worker, relay, storag
       const r = await postEvent('application', new Uint8Array(out.output));
       if (r.status === 201) {
         S.epoch = r.body.epoch; save();
+        if (S.diverged?.reason === 'not_a_member') setDiverged(null);   // #813: 릴레이가 다시 멤버로 받았다
         typingSentAt = 0;   // #562: the relay dropped our typing signal when it stored this event — nothing to clear
         const ts = Date.now();
         emitText(device, device, text, r.body.seq, ts, false, local);
@@ -589,6 +620,11 @@ export function createRoomSession({room, device, database, worker, relay, storag
         return r.body.seq;
       }
       if (r.status === 409 && r.body && r.body.error === 'cas_mismatch' && attempt === 0) { log(strings.room.epochChanged); await sync(); continue; }
+      // #813 S3: 「동기화 뒤 다시 시도」는 이 경우 풀리지 않는다 — 동기화로 나를 뺀 commit 이 없는지 확인한 뒤에도 멤버면 어긋남으로 알린다.
+      if (r.status === 403 && r.body?.error === 'not_a_member') {
+        await sync({quiet: true});
+        if (noteRefusal()) throw new Error(strings.room.relayDiverged);
+      }
       throw new Error(strings.room.sendFailed(describe(r.status, r.body)));
     }
     return null;

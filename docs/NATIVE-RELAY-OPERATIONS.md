@@ -275,8 +275,11 @@ python3 scripts/native_relay_cutover.py @/etc/native-relay/cutover.args --confir
 사람이 확인한다. 계획 이전처럼 정지 뒤의 마지막 스냅샷으로 옮겼다면 손실 구간이 없고 아래는 필요 없다(2026-11-06 실측).
 1. 손실 구간을 방에 알린다 — 그 사이 메시지를 못 받은 기기가 있을 수 있고 화면에는 표시가 없다.
 2. 그 구간에 **구성원 추가·제거가 있었던 방**과 **새로 만든 방**을 가린다. **새로 만든 방**은 봇이 있는 방이면 `room status`·`health.json`의
-   `relay_missing: true`로 드러난다(#814, 이벤트 `relay_missing`). **구성원 변경**은 봇의 `room status`·기기 화면으로 판단할 수 없다(모두
-   정상으로 나온다, #813). 근거가 없으면 구성원이 여럿인 방은 옮기는 쪽이 안전하다.
+   `relay_missing: true`로 드러난다(#814, 이벤트 `relay_missing`). **구성원 변경**이 사라진 방은 봇이 그
+   방에 있으면 `room status`·`health.json`의 `relay_diverged`(`epoch_regressed`, 이벤트 `relay_diverged`)로, 한데 웹은 방 위
+   「이 방은 릴레이와 어긋났습니다. 운영자에게 알려 주세요」로 드러난다(#813 1단계 — 손실 구간 내내 켜져 있던 기기·봇과 사라진 commit으로
+   들어온 기기). 손실 구간에 **꺼져 있던** 기기와 iOS·Android 앱 화면은 아직 드러나지 않는다(2단계). 근거가 없으면 구성원이 여럿인 방은
+   옮기는 쪽이 안전하다.
 3. 그 방들은 스튜어드 봇이 새 방을 열고 전원을 다시 초대한다(`native-mls-bot room create <방> <모드>` → 기기마다 `room invite <방> <기기>`,
    `bot/STEWARD.md`). 실측: 봇 3.4 s(3명), 웹 화면으로는 15~35 s. 예전 서술의 운영자 relay-app 기기는 폐기됐다.
 4. **초대가 받아지지 않으면 다시 한다**: 복원 뒤에는 로비 키패키지가 한 칸 어긋나 있다. `room remove <방> <기기>` 뒤 `room invite`를 다시

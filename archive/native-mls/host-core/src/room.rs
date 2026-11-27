@@ -12,6 +12,9 @@
 //! - [`send_application`] (#366 slice 2c): encrypt → reserve the dedup key →
 //!   persist → POST over a [`SendHost`], with the 409 outcomes a host replays
 //!   or skips.
+//! - [`RelayDiverged`] (#813 phase 1): the relay is behind this device — its
+//!   room epoch below the group's ([`epoch_regressed`], S1), or a 403
+//!   `not_a_member` while the group lists this device (S3). Reported only.
 //!
 //! The crate still does not link the MLS facade: a host adapts its group
 //! object to [`MlsGroup`]. Transport, logging, halt markers, state files and
@@ -48,6 +51,8 @@ pub trait MlsGroup {
     /// device's sender ratchet). The adapter owns the framing and the AAD
     /// client_id (the bot binds its device identity — review H1).
     fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ()>;
+    /// The group's MLS epoch; `None` without a group (#813 S1 input).
+    fn epoch(&self) -> Option<u64>;
 }
 
 /// Run one MLS operation with rollback (review 2 B-H1/B-H3): the facade
@@ -159,6 +164,68 @@ pub struct RoomSync {
     pub ack_disabled: bool,
     /// Refused commit or pruned history: neither read nor acked any more.
     pub halted: bool,
+    /// #813: the relay is behind this device's MLS state (a restore from an
+    /// older snapshot). Reported only — nothing is halted or repaired. Memory
+    /// only: S1 is re-derived from every page, S3 from the next refusal.
+    pub diverged: Option<RelayDiverged>,
+    /// #813 S3: a 403 `not_a_member` (POST or ack) waiting for the next page
+    /// to confirm this device still lists itself after catching up.
+    pub refused_member: bool,
+}
+
+/// #813 phase 1: which signal found the relay behind this device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DivergedReason {
+    /// S1: the relay's room epoch is below this device's MLS epoch.
+    EpochRegressed,
+    /// S3: the relay refused this device as `not_a_member` while its own
+    /// group — caught up with the relay's log — still lists it.
+    NotAMember,
+}
+
+impl DivergedReason {
+    /// The wire name (`room status`, `health.json`, logs).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DivergedReason::EpochRegressed => "epoch_regressed",
+            DivergedReason::NotAMember => "not_a_member",
+        }
+    }
+}
+
+/// #813: `relay_diverged { reason, relay_epoch, local_epoch }` of one room.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelayDiverged {
+    pub reason: DivergedReason,
+    /// The relay's room epoch (last page).
+    pub relay_epoch: i64,
+    /// This device's MLS group epoch.
+    pub local_epoch: i64,
+}
+
+/// #813 S1: the relay's room epoch fell below this device's MLS epoch.
+///
+/// Never true in normal operation: the relay starts a room at epoch 0 and
+/// moves it by exactly one per stored commit, under CAS (the posted epoch must
+/// equal the room's — `server/store.go`), and a device's group moves only by
+/// merging a commit the relay already stored — a foreign one read from the
+/// log, or its own pending commit when the relay echoes it (a 409 clears it,
+/// epoch unchanged). Joining takes the Welcome's epoch, which the relay has
+/// reached. So the relay can only be behind after losing stored commits — a
+/// restore from an older snapshot, or `-reset-room` before a re-founding.
+pub fn epoch_regressed(relay_epoch: i64, local_epoch: Option<u64>) -> Option<RelayDiverged> {
+    let local_epoch = i64::try_from(local_epoch?).unwrap_or(i64::MAX);
+    (relay_epoch < local_epoch).then_some(RelayDiverged { reason: DivergedReason::EpochRegressed, relay_epoch, local_epoch })
+}
+
+/// The relay refuses this device as a room member (403 `not_a_member`).
+fn refuses_member(err: &RelayError) -> bool {
+    matches!(err, RelayError::Api { status: 403, code } if code == "not_a_member")
+}
+
+/// Whether this device's group lists `own` (`false` without a group).
+fn lists_itself<G: MlsGroup>(group: &G, own: &str) -> bool {
+    group.members().ok().and_then(|f| policy::parse_roster(&f)).is_some_and(|roster| roster.iter().any(|m| m.id == own))
 }
 
 /// What [`poll`] tells the host to log (the bot prints these as JSON lines).
@@ -216,10 +283,12 @@ pub trait RoomHost: RoomAccess {
 /// halted → nothing · ack what is durable (joined only) → GET events
 ///   404 no_such_room → nothing · 400 bad_ack / 403 not_a_member on an ack → stop acking
 /// → pruned-history gap → halt (before anything moves)
+/// → relay epoch < MLS epoch → diverged (#813 S1, reported only)
 /// → epoch = page epoch → per event: cursor = max(cursor, seq)
 ///   own → host · welcome → join (joinable, not joined) or ignore
 ///   commit (joined) → apply_commit · application (joined) → decrypt → host
-/// → joined → host.after_page
+/// → a 403 not_a_member since the last page and the group still lists
+///   this device → diverged (#813 S3) → joined → host.after_page
 /// ```
 ///
 /// Events before our Welcome are not ours to read and are skipped.
@@ -238,7 +307,10 @@ pub fn poll<H: RoomHost>(host: &mut H, own: &str) -> Result<(), RelayError> {
         Err(RelayError::Api { status, code })
             if ack.is_some() && ((status == 400 && code == "bad_ack") || (status == 403 && code == "not_a_member")) =>
         {
-            host.sync().ack_disabled = true;
+            let sync = host.sync();
+            sync.ack_disabled = true;
+            // #813 S3: a removed device acks too; the next page decides.
+            sync.refused_member |= status == 403;
             host.report(SyncEvent::AckRefused { ack: ack.unwrap_or_default(), status, code: &code });
             return Ok(());
         }
@@ -251,6 +323,15 @@ pub fn poll<H: RoomHost>(host: &mut H, own: &str) -> Result<(), RelayError> {
     if let Some((from, to)) = history_gap(sync.joined, sync.cursor, page.first_seq) {
         sync.halted = true;
         return host.halt(Halt::Gap { first_seq: page.first_seq, relay_epoch: page.epoch, from, to });
+    }
+    // #813 S1, before this page moves the group: the relay has reached every
+    // epoch this device merged unless it lost commits (`epoch_regressed`).
+    let local = if sync.joined { host.group().epoch() } else { None };
+    let sync = host.sync();
+    match epoch_regressed(page.epoch, local) {
+        Some(diverged) => sync.diverged = Some(diverged),
+        None if sync.diverged.as_ref().is_some_and(|d| d.reason == DivergedReason::EpochRegressed) => sync.diverged = None,
+        None => {}
     }
     sync.epoch = page.epoch;
     for ev in &page.events {
@@ -311,10 +392,30 @@ pub fn poll<H: RoomHost>(host: &mut H, own: &str) -> Result<(), RelayError> {
             _ => {}
         }
     }
+    confirm_refusal(host, own);
     if host.sync().joined {
         host.after_page()?;
     }
     Ok(())
+}
+
+/// #813 S3: after a 403 `not_a_member`, the page just processed decides. A
+/// device the relay dropped by a commit it has now read no longer lists itself
+/// (its group drops it on merge) — that is a removal, not divergence. One that
+/// still lists itself was added by a commit the relay no longer has. An S1
+/// verdict already set is kept: it is the cause.
+fn confirm_refusal<H: RoomHost>(host: &mut H, own: &str) {
+    let sync = host.sync();
+    if !std::mem::take(&mut sync.refused_member) || !sync.joined || sync.halted || sync.diverged.is_some() {
+        return;
+    }
+    let relay_epoch = sync.epoch;
+    let group = host.group();
+    let local_epoch = lists_itself(&group, own).then(|| group.epoch().map_or(0, |e| i64::try_from(e).unwrap_or(i64::MAX)));
+    drop(group);
+    if let Some(local_epoch) = local_epoch {
+        host.sync().diverged = Some(RelayDiverged { reason: DivergedReason::NotAMember, relay_epoch, local_epoch });
+    }
 }
 
 /// A host of one room for [`send_application`].
@@ -369,7 +470,15 @@ pub fn send_application<H: SendHost>(host: &mut H, own: &str, plaintext: &[u8]) 
         members: Vec::new(),
         bytes: framed,
     };
-    match host.post(&room, &post) {
+    let result = host.post(&room, &post);
+    // #813 S3: the relay's verdict on this device's membership.
+    let sync = host.sync();
+    match &result {
+        Err(err) if refuses_member(err) => sync.refused_member = true,
+        Ok(_) if sync.diverged.as_ref().is_some_and(|d| d.reason == DivergedReason::NotAMember) => sync.diverged = None,
+        _ => {}
+    }
+    match result {
         Ok(response) => Ok(SendOutcome::Sent { client_id, response }),
         Err(error @ RelayError::Api { status: 409, .. }) if api::error_code(&error) == Some("cas_mismatch") => {
             Ok(SendOutcome::Conflict { client_id, error })
@@ -423,6 +532,12 @@ mod tests {
         merged: u32,
         discarded: u32,
         retired: bool,
+        /// #813: the MLS epoch (`None` = no group); a merge moves it by one,
+        /// a join takes `welcome_epoch`.
+        epoch: Option<u64>,
+        welcome_epoch: u64,
+        /// The roster once the next merge lands (a removal of this device).
+        roster_after_merge: Option<Vec<String>>,
     }
 
     /// `policy::parse_roster` framing: `u32 LE len ‖ identity ‖ 32-byte key`.
@@ -465,6 +580,8 @@ mod tests {
         fn merge_staged(&mut self) -> Result<(), ()> {
             if self.reject_merge { self.retired = true; return Err(()) }
             self.merged += 1;
+            self.epoch = self.epoch.map(|e| e + 1);
+            if let Some(roster) = self.roster_after_merge.take() { self.roster = roster; }
             Ok(())
         }
         fn discard_staged(&mut self) { self.staged = false; self.discarded += 1; }
@@ -474,6 +591,7 @@ mod tests {
         }
         fn join(&mut self, welcome: &[u8]) -> Result<(), ()> {
             if welcome == b"poison" { self.retired = true; return Err(()) }
+            self.epoch = Some(self.welcome_epoch);
             Ok(())
         }
         fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ()> {
@@ -487,6 +605,7 @@ mod tests {
                 None => { self.retired = true; Err(()) }
             }
         }
+        fn epoch(&self) -> Option<u64> { self.epoch }
     }
 
     /// Test-only: a borrowed group is a group (what `RoomHost::group` lends).
@@ -501,6 +620,7 @@ mod tests {
         fn join(&mut self, welcome: &[u8]) -> Result<(), ()> { (**self).join(welcome) }
         fn decrypt(&mut self, ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ()> { (**self).decrypt(ciphertext) }
         fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ()> { (**self).encrypt(plaintext) }
+        fn epoch(&self) -> Option<u64> { (**self).epoch() }
     }
 
     /// A host that serves scripted pages and records every callback.
@@ -562,7 +682,12 @@ mod tests {
             self.apps.push((ev.seq, String::from_utf8_lossy(&sender).into(), String::from_utf8_lossy(&plaintext).into()));
             Ok(())
         }
-        fn own_event(&mut self, ev: &StoredRow) -> Result<(), RelayError> { self.own.push(ev.seq); Ok(()) }
+        /// An own commit's echo merges the pending commit (the bot's `own_commit_echo`).
+        fn own_event(&mut self, ev: &StoredRow) -> Result<(), RelayError> {
+            self.own.push(ev.seq);
+            if ev.kind == "commit" { self.group.epoch = self.group.epoch.map(|e| e + 1); }
+            Ok(())
+        }
         fn after_page(&mut self) -> Result<(), RelayError> { self.after_pages += 1; Ok(()) }
     }
 
@@ -711,6 +836,7 @@ mod tests {
         host.sync.acked = 10;
         poll(&mut host, "bot").expect("refused ack is not fatal");
         assert!(host.sync.ack_disabled);
+        assert!(host.sync.refused_member, "#813 S3: the next page decides");
         assert_eq!(host.log, ["ack_refused 10 403 not_a_member"]);
         assert_eq!(host.after_pages, 0);
         // Without an ack the same error is the caller's.
@@ -837,6 +963,123 @@ mod tests {
         assert!(matches!(send_application(&mut host, "bot", b"hi"), Err(RelayError::Local("encrypt echo"))));
         assert!(host.steps.is_empty() && host.posted.is_empty());
         assert_eq!(host.counter, 6);
+    }
+
+    #[test]
+    fn epoch_regressed_rule() {
+        assert_eq!(epoch_regressed(3, Some(3)), None, "in step");
+        assert_eq!(epoch_regressed(4, Some(3)), None, "relay ahead: commits this device has not read yet");
+        assert_eq!(epoch_regressed(2, Some(3)),
+                   Some(RelayDiverged { reason: DivergedReason::EpochRegressed, relay_epoch: 2, local_epoch: 3 }));
+        assert_eq!(epoch_regressed(0, None), None, "no group, nothing to compare");
+        assert_eq!(epoch_regressed(i64::MAX, Some(u64::MAX)), None, "saturates, never wraps");
+        assert_eq!((DivergedReason::EpochRegressed.as_str(), DivergedReason::NotAMember.as_str()), ("epoch_regressed", "not_a_member"));
+    }
+
+    /// #813: normal flows never flag — an own commit (pending until its echo),
+    /// a lost race (409 cleared our pending commit; the winner's commit is
+    /// read next), a join and a reconnect all keep the relay at or ahead of
+    /// the group.
+    #[test]
+    fn poll_never_flags_divergence_in_normal_flows() {
+        // Own commit posted at epoch 1 (relay → 2), merged on its echo; then a reconnect.
+        let mut host = ScriptHost::new(true, 4, vec![events(2, 1, vec![row(5, "bot", "commit", 1, b"own")]), events(2, 1, vec![])]);
+        host.group.epoch = Some(1);
+        poll(&mut host, "bot").expect("own echo");
+        assert_eq!(host.group.epoch, Some(2), "merged on the echo");
+        poll(&mut host, "bot").expect("reconnect");
+        assert_eq!(host.sync.diverged, None);
+        // Lost race: our commit drew 409 (cleared, still epoch 1); the winner's commit follows.
+        let mut host = ScriptHost::new(true, 4, vec![events(2, 1, vec![row(5, "owner", "commit", 1, b"winner")]), events(2, 1, vec![])]);
+        host.group.epoch = Some(1);
+        poll(&mut host, "bot").expect("winner applied");
+        assert_eq!(host.group.epoch, Some(2));
+        poll(&mut host, "bot").expect("again");
+        assert_eq!(host.sync.diverged, None);
+        // Join from a Welcome at epoch 2 (no group before it), then the room at 2.
+        let mut host = ScriptHost::new(false, 0, vec![events(2, 1, vec![row(3, "owner", "welcome", 2, b"w")]), events(2, 1, vec![])]);
+        host.group.welcome_epoch = 2;
+        poll(&mut host, "bot").expect("join");
+        poll(&mut host, "bot").expect("next page");
+        assert!(host.sync.joined);
+        assert_eq!(host.sync.diverged, None);
+    }
+
+    /// #813 S1 (#440 P/Q at unit level): the relay came back from a snapshot
+    /// taken before one commit, so its room epoch is one below this device's
+    /// group. Flagged before the page moves anything; nothing halts and the
+    /// page is still read; a relay back at the group's epoch clears it.
+    #[test]
+    fn poll_flags_a_relay_behind_the_group() {
+        let mut host = ScriptHost::new(true, 1004, vec![
+            events(2, 1001, vec![row(1005, "owner", "application", 2, b"ok:after the restore")]),
+            events(3, 1001, vec![]),
+        ]);
+        host.group.epoch = Some(3);
+        poll(&mut host, "bot").expect("reported, not an error");
+        assert_eq!(host.sync.diverged, Some(RelayDiverged { reason: DivergedReason::EpochRegressed, relay_epoch: 2, local_epoch: 3 }));
+        assert!(!host.sync.halted && host.halts.is_empty(), "notify only");
+        assert_eq!(host.apps.len(), 1, "the page is still read");
+        assert_eq!(host.sync.epoch, 2, "sends keep the relay's epoch (CAS)");
+        poll(&mut host, "bot").expect("relay caught up");
+        assert_eq!(host.sync.diverged, None);
+    }
+
+    /// #813 S3: a 403 `not_a_member` counts once the next page shows this
+    /// device still in its own group (the device the lost commit added). A
+    /// removal read on that page is not divergence; neither is an unjoined
+    /// device. An S1 verdict already set stays — it is the cause.
+    #[test]
+    fn poll_confirms_a_member_refusal_only_while_the_group_lists_this_device() {
+        let mut host = ScriptHost::new(true, 4, vec![events(2, 1, vec![])]);
+        host.group.epoch = Some(2);
+        host.sync.refused_member = true;
+        poll(&mut host, "bot").expect("poll");
+        assert_eq!(host.sync.diverged, Some(RelayDiverged { reason: DivergedReason::NotAMember, relay_epoch: 2, local_epoch: 2 }));
+        assert!(!host.sync.refused_member, "one refusal, one verdict");
+        // Removed by a commit this device had not read when it posted.
+        let mut host = ScriptHost::new(true, 4, vec![events(3, 1, vec![row(5, "owner", "commit", 2, b"remove bot")])]);
+        host.group = group(&["owner", "bot"], report(&[], &["bot"], &["owner"]));
+        host.group.epoch = Some(2);
+        host.group.roster_after_merge = Some(vec!["owner".into()]);
+        host.sync.refused_member = true;
+        poll(&mut host, "bot").expect("poll");
+        assert_eq!(host.group.merged, 1);
+        assert_eq!(host.sync.diverged, None, "a removal is not divergence");
+        // Not joined: no group of its own to compare.
+        let mut host = ScriptHost::new(false, 0, vec![events(2, 1, vec![])]);
+        host.sync.refused_member = true;
+        poll(&mut host, "bot").expect("poll");
+        assert_eq!(host.sync.diverged, None);
+        // Both signals: S1 stays.
+        let mut host = ScriptHost::new(true, 4, vec![events(1, 1, vec![])]);
+        host.group.epoch = Some(2);
+        host.sync.refused_member = true;
+        poll(&mut host, "bot").expect("poll");
+        assert_eq!(host.sync.diverged.map(|d| d.reason), Some(DivergedReason::EpochRegressed));
+    }
+
+    /// #813 S3 on the send path: a 403 `not_a_member` arms the check (the
+    /// error stays the caller's); a stored send clears a membership verdict
+    /// but not an epoch one.
+    #[test]
+    fn send_arms_the_member_check_and_a_stored_send_clears_it() {
+        let mut host = ScriptSender::new(Err(RelayError::Api { status: 403, code: "not_a_member".into() }));
+        assert!(send_application(&mut host, "bot", b"hi").is_err());
+        assert!(host.sync.refused_member && host.sync.diverged.is_none(), "the next page decides");
+        let mut host = ScriptSender::new(Err(RelayError::Api { status: 409, code: "cas_mismatch".into() }));
+        assert!(matches!(send_application(&mut host, "bot", b"hi").expect("conflict"), SendOutcome::Conflict { .. }));
+        assert!(!host.sync.refused_member && host.sync.diverged.is_none(), "a CAS race is not divergence");
+        let stored = || Ok(EventResponse { seq: 12, epoch: 4, revision: 0, duplicate: false });
+        let mut host = ScriptSender::new(stored());
+        host.sync.diverged = Some(RelayDiverged { reason: DivergedReason::NotAMember, relay_epoch: 4, local_epoch: 4 });
+        send_application(&mut host, "bot", b"hi").expect("sent");
+        assert_eq!(host.sync.diverged, None, "the relay took this device as a member again");
+        let mut host = ScriptSender::new(stored());
+        let s1 = RelayDiverged { reason: DivergedReason::EpochRegressed, relay_epoch: 4, local_epoch: 5 };
+        host.sync.diverged = Some(s1.clone());
+        send_application(&mut host, "bot", b"hi").expect("sent");
+        assert_eq!(host.sync.diverged, Some(s1), "S1 is the page's to clear");
     }
 
     #[test]

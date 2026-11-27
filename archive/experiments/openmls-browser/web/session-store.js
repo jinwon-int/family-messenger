@@ -588,6 +588,8 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
         // A facade-rejected decrypt at the head of the inbox is persisted as a
         // tombstone instead (classifyDecryptFailure) and resolves {rejected: true,
         // sequence} — the caller must send the next message with sequence + 1.
+        // Every result carries `epoch`, the group's MLS epoch after it (a decimal
+        // string, 'none' without a group): #813 compares it with the relay's.
         operation(meta, argument, apply) {
           if (!exact(argument, ['id', 'method', 'bytes', 'sequence', 'fault']) ||
               !validId(argument.id) || meta.acked.includes(argument.id) || !allowed.has(argument.method) ||
@@ -599,8 +601,8 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
             if (prior.method !== argument.method || prior.sequence !== argument.sequence || !equal(prior.input, bytes) ||
                 (prior.method === 'encrypt' && prior.epoch !== meta.epoch)) fail();
             // A tombstone replays as the same verdict (idempotent); it never gains an output.
-            if (prior.rejected === true) return {rejected: true, sequence: prior.sequence, revision: meta.revision, cursor: meta.cursor, replay: true, changed: 0};
-            return {output: Array.from(prior.output), revision: meta.revision, cursor: meta.cursor, replay: true, changed: 0};
+            if (prior.rejected === true) return {rejected: true, sequence: prior.sequence, revision: meta.revision, cursor: meta.cursor, epoch: meta.epoch, replay: true, changed: 0};
+            return {output: Array.from(prior.output), revision: meta.revision, cursor: meta.cursor, epoch: meta.epoch, replay: true, changed: 0};
           }
           if (meta.ledger.length >= MAX_LEDGER || meta.revision >= Number.MAX_SAFE_INTEGER) fail();
           if (argument.method === 'decrypt' ? argument.sequence !== meta.cursor + 1 : argument.sequence !== 0) fail();
@@ -635,7 +637,7 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
             const written = persist(meta, []);
             dropSession();
             if (fault === 'abort-after-write') { abort(); return undefined; }
-            return {rejected: true, sequence: argument.sequence, revision: meta.revision, cursor: meta.cursor, replay: false,
+            return {rejected: true, sequence: argument.sequence, revision: meta.revision, cursor: meta.cursor, epoch: meta.epoch, replay: false,
               changed: 0, bytes_written: 0, meta_bytes: written.meta};
           }
           if (stagesCommit) {
@@ -646,7 +648,7 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
             const output = result.output();
             result.free();
             staging = true;
-            return {output: Array.from(output), revision: meta.revision, cursor: meta.cursor, replay: false, changed: 0, transient: true};
+            return {output: Array.from(output), revision: meta.revision, cursor: meta.cursor, epoch: meta.epoch, replay: false, changed: 0, transient: true};
           }
           staging = false;
           inflight = true;
@@ -668,7 +670,7 @@ export function createStore(api, {kind, identity, room, namePattern, allowed, ex
           let written;
           try { written = persist(meta, changes); } finally { wipeChanges(changes); }
           if (fault === 'abort-after-write') { abort(); return undefined; }
-          return {output: Array.from(output), revision: meta.revision, cursor: meta.cursor, replay: false,
+          return {output: Array.from(output), revision: meta.revision, cursor: meta.cursor, epoch: meta.epoch, replay: false,
             changed: changes.length, bytes_written: written.entries, meta_bytes: written.meta};
         },
         // Pin/metadata-only update with its own fault injection (no session change).
