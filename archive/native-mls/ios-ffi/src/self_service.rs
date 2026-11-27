@@ -20,7 +20,7 @@ fn device_of(d: &MlsMeDevice) -> MeDevice {
     }
 }
 
-fn me_of(me: &Option<MlsMe>) -> Option<MeInfo> {
+pub(crate) fn me_of(me: &Option<MlsMe>) -> Option<MeInfo> {
     me.as_ref().map(|m| MeInfo {
         subject: m.subject.clone(),
         policy_revision: m.policy_revision,

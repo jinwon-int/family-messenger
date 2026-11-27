@@ -19,10 +19,12 @@ mod file;
 mod lobby;
 mod room;
 mod self_service;
+mod sibling_queue;
 pub use file::*;
 pub use lobby::*;
 pub use room::*;
 pub use self_service::*;
+pub use sibling_queue::*;
 
 uniffi::setup_scaffolding!();
 
