@@ -100,6 +100,7 @@ Host로 추정하지 않고 운영자가 명시해야 켜진다(`-well-known-nam
 | `threads` | Threads | threads.net, www.threads.net, threads.com, www.threads.com | 링크만 | — | — |
 | `reuters` | Reuters | reuters.com, www.reuters.com | 링크만 | — | — |
 | `bunjang` | 번개장터 | m.bunjang.co.kr, bunjang.co.kr, www.bunjang.co.kr | 링크만 | — | — |
+| `naver-me` | 네이버 | naver.me | ✓(단축) | `/{code}`(영숫자 4–16) → `https://naver.me/{code}` 의 리다이렉트를 **한 번 읽기만** 하고(따라가지 않음) 목적지를 위 미리보기 사이트 규칙으로 정규화 — 목적지가 미리보기 사이트가 아니거나 다시 단축 링크면 404 `no_preview`(목적지에는 요청하지 않음). 응답 `site`·`url`·이미지 허용은 목적지 사이트 것 | — |
 
 새 사이트는 레지스트리 한 항목 + (미리보기 사이트면) 경로 규칙 함수 + `normalizeImageURL` 의 호스트별 리터럴 접두 case 만
 추가한다(테스트가 레지스트리·switch 불일치를 잡는다). 릴레이는 고정 허용 호스트에만 https 로 접속하고(UA 기본

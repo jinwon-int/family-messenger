@@ -29,6 +29,7 @@ func TestPreviewRegistryMatchesContract(t *testing.T) {
 		{"threads", "Threads", []string{"threads.net", "www.threads.net", "threads.com", "www.threads.com"}, false, nil},
 		{"reuters", "Reuters", []string{"reuters.com", "www.reuters.com"}, false, nil},
 		{"bunjang", "번개장터", []string{"m.bunjang.co.kr", "bunjang.co.kr", "www.bunjang.co.kr"}, false, nil},
+		{"naver-me", "네이버", []string{"naver.me"}, true, nil},
 	}
 	if len(previewSites) != len(want) {
 		t.Fatalf("registry has %d sites, contract %d", len(previewSites), len(want))
@@ -50,6 +51,8 @@ func TestPreviewRegistryMatchesContract(t *testing.T) {
 		"upper host": {{id: "a", name: "A", hosts: []string{"Upper.example"}}},
 		"no images":  {{id: "a", name: "A", hosts: []string{"noimg.example"}, page: bbcPage}},
 		"link imgs":  {{id: "a", name: "A", hosts: []string{"linkimg.example"}, imageHosts: []string{"img.example"}}},
+		"short imgs": {{id: "a", name: "A", hosts: []string{"shortimg.example"}, resolve: naverMeShort, imageHosts: []string{"img2.example"}}},
+		"page+short": {{id: "a", name: "A", hosts: []string{"both.example"}, page: bbcPage, resolve: naverMeShort, imageHosts: []string{"img3.example"}}},
 	} {
 		_, err := indexPreviewSites(bad)
 		if err == nil {
@@ -138,6 +141,10 @@ func TestNormalizePreviewURLSites(t *testing.T) {
 		{"https://www.bbc.com/news/articles/crz98zqkz7z0o", "bbc", "https://www.bbc.com/news/articles/crz98zqkz7z0o"},
 		{"https://bbc.co.uk/news/articles/c12345678?at_medium=RSS", "bbc", "https://www.bbc.com/news/articles/c12345678"},
 		{"https://www.bbc.co.uk/news/articles/" + strings.Repeat("z", 20) + "/", "bbc", "https://www.bbc.com/news/articles/" + strings.Repeat("z", 20)},
+		// naver.me short links: one alphanumeric code (4–16), query dropped — the relay then reads its redirect.
+		{"https://naver.me/x9VfCExq", "naver-me", "https://naver.me/x9VfCExq"},
+		{"https://NAVER.ME/x9VfCExq?utm=1#f", "naver-me", "https://naver.me/x9VfCExq"},
+		{"https://naver.me/abcd/", "naver-me", "https://naver.me/abcd"},
 	}
 	for _, g := range good {
 		site, c, _, ok := normalizePreviewURL(g.in)
@@ -192,6 +199,10 @@ func TestNormalizePreviewURLSites(t *testing.T) {
 		"https://www.bbc.com/news/articles/c123456", "https://www.bbc.com/news/articles/" + long(21), "https://www.bbc.com/news/articles/C12345678",
 		"https://www.bbc.com/news/world-12345678", "https://www.bbc.com/sport/articles/c12345678", "https://www.bbc.com/news/articles",
 		"https://www.bbc.com/news/articles/c12345678/x", "https://www.bbc.com/news/articles/c1234567%38",
+		// naver.me codes.
+		"http://naver.me/x9VfCExq", "https://naver.me/", "https://naver.me/abc", "https://naver.me/" + long(17),
+		"https://naver.me/x9Vf-CExq", "https://naver.me/x9VfCExq/extra", "https://naver.me/x9V%66CExq", "https://naver.me:443/x9VfCExq",
+		"https://user@naver.me/x9VfCExq", "https://naver.me.evil.example/x9VfCExq", "https://www.naver.me/x9VfCExq",
 		// Misc.
 		"", "javascript:alert(1)", "https://www.youtube.com/watch?v=dQw4w9WgXcQ&pad=" + long(previewURLMaxBytes),
 	}

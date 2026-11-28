@@ -251,15 +251,26 @@ type previewCall struct {
 // linkPreviewer is the fetcher + cache behind both routes. Its own mutex is
 // never taken under relay.mu.
 type linkPreviewer struct {
-	pageClient  *http.Client
-	imageClient *http.Client
-	sem         chan struct{}
-	now         func() time.Time
+	pageClient    *http.Client
+	imageClient   *http.Client
+	resolveClient *http.Client // shorteners: one request, redirect read, never followed
+	sem           chan struct{}
+	now           func() time.Time
 
 	mu       sync.Mutex
 	cache    map[string]*previewEntry
 	inflight map[string]*previewCall
+	resolved map[string]*resolveEntry
 	seq      uint64
+}
+
+// resolveEntry caches one short link's redirect target ("" = no usable
+// redirect) with the status to answer while it is fresh.
+type resolveEntry struct {
+	target  string
+	status  int
+	expires time.Time
+	seq     uint64
 }
 
 // newLinkPreviewer builds the previewer over rt; nil means the production
@@ -272,11 +283,110 @@ func newLinkPreviewer(rt http.RoundTripper) *linkPreviewer {
 	return &linkPreviewer{
 		pageClient:  previewClient(rt, pageRedirectHosts),
 		imageClient: previewClient(rt, imageRedirectHosts),
-		sem:         make(chan struct{}, previewConcurrency),
-		now:         time.Now,
-		cache:       map[string]*previewEntry{},
-		inflight:    map[string]*previewCall{},
+		resolveClient: &http.Client{
+			Transport: rt,
+			Timeout:   previewTimeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		sem:      make(chan struct{}, previewConcurrency),
+		now:      time.Now,
+		cache:    map[string]*previewEntry{},
+		inflight: map[string]*previewCall{},
+		resolved: map[string]*resolveEntry{},
 	}
+}
+
+// resolveShort reads the redirect of a shortener URL (built by the site's
+// resolve rule from a constant prefix) without following it and returns the
+// absolute Location. The caller must normalize the target against the
+// registry before anything is fetched from it. status is 200 with a target,
+// 404 when the upstream answered without a redirect, 502 on upstream failure.
+func (p *linkPreviewer) resolveShort(ctx context.Context, site *previewSite, fetch, key string) (target string, status int) {
+	id := previewCacheKey(site, key)
+	p.mu.Lock()
+	if e, ok := p.resolved[id]; ok {
+		if p.now().Before(e.expires) {
+			p.mu.Unlock()
+			return e.target, e.status
+		}
+		delete(p.resolved, id)
+	}
+	p.mu.Unlock()
+
+	target, status, cacheable := p.fetchRedirect(ctx, site, fetch)
+	if cacheable {
+		p.mu.Lock()
+		p.storeResolvedLocked(id, target, status)
+		p.mu.Unlock()
+	}
+	return target, status
+}
+
+func (p *linkPreviewer) fetchRedirect(ctx context.Context, site *previewSite, fetch string) (target string, status int, cacheable bool) {
+	if !p.acquire(ctx) {
+		log.Printf("preview: short site=%s busy (no upstream slot)", site.id)
+		return "", http.StatusBadGateway, false
+	}
+	defer p.release()
+	req, err := http.NewRequestWithContext(context.WithoutCancel(ctx), http.MethodGet, fetch, nil)
+	if err != nil {
+		return "", http.StatusBadGateway, true
+	}
+	req.Header.Set("User-Agent", site.ua())
+	req.Header.Set("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1")
+	start := time.Now()
+	resp, err := p.resolveClient.Do(req)
+	if err != nil {
+		log.Printf("preview: short site=%s upstream error=%s dur=%s", site.id, previewErrClass(err), time.Since(start).Round(time.Millisecond))
+		return "", http.StatusBadGateway, true
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+	default:
+		log.Printf("preview: short site=%s upstream status=%d (no redirect) dur=%s", site.id, resp.StatusCode, time.Since(start).Round(time.Millisecond))
+		return "", http.StatusNotFound, true
+	}
+	loc, err := resp.Request.URL.Parse(resp.Header.Get("Location"))
+	if err != nil || resp.Header.Get("Location") == "" || len(loc.String()) > previewURLMaxBytes {
+		log.Printf("preview: short site=%s upstream status=%d bad location dur=%s", site.id, resp.StatusCode, time.Since(start).Round(time.Millisecond))
+		return "", http.StatusNotFound, true
+	}
+	// Only the target host is logged — never its path or id.
+	log.Printf("preview: short site=%s upstream status=%d target_host=%s dur=%s", site.id, resp.StatusCode, strings.ToLower(loc.Hostname()), time.Since(start).Round(time.Millisecond))
+	return loc.String(), http.StatusOK, true
+}
+
+// storeResolvedLocked caches a resolution like storeLocked (success 6 h, else
+// 10 min, at most previewCacheMax entries). p.mu must be held.
+func (p *linkPreviewer) storeResolvedLocked(id, target string, status int) {
+	now := p.now()
+	ttl := previewCacheFail
+	if status == http.StatusOK {
+		ttl = previewCacheOK
+	}
+	if _, ok := p.resolved[id]; !ok && len(p.resolved) >= previewCacheMax {
+		for k, e := range p.resolved {
+			if !now.Before(e.expires) {
+				delete(p.resolved, k)
+			}
+		}
+		for len(p.resolved) >= previewCacheMax {
+			var oldest string
+			var min uint64
+			first := true
+			for k, e := range p.resolved {
+				if first || e.seq < min {
+					oldest, min, first = k, e.seq, false
+				}
+			}
+			delete(p.resolved, oldest)
+		}
+	}
+	p.seq++
+	p.resolved[id] = &resolveEntry{target: target, status: status, expires: now.Add(ttl), seq: p.seq}
 }
 
 // previewClient: no cookie jar, overall timeout, redirects only to https
@@ -566,6 +676,22 @@ func (s *relay) handlePreview(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		s.fail(w, http.StatusBadRequest, apiError{Error: "bad_url"})
 		return
+	}
+	if site.shortener() {
+		// Read the short link's redirect once; only a target that normalizes
+		// to a page site (never another shortener) is fetched — under that
+		// site's own page rule, redirect hosts and image hosts.
+		target, status := s.preview.resolveShort(req.Context(), site, canonical, key)
+		if status == http.StatusBadGateway {
+			s.fail(w, http.StatusBadGateway, apiError{Error: "upstream_failed"})
+			return
+		}
+		tsite, tcanonical, tkey, tok := normalizePreviewURL(target)
+		if status != http.StatusOK || !tok || tsite.shortener() {
+			s.fail(w, http.StatusNotFound, apiError{Error: "no_preview"})
+			return
+		}
+		site, canonical, key = tsite, tcanonical, tkey
 	}
 	res := s.preview.preview(req.Context(), site, canonical, key)
 	switch res.status {

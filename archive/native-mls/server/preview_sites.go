@@ -36,11 +36,20 @@ type previewSite struct {
 	// "https://<host>/" prefix concatenated with validated path parts
 	// (CodeQL go/request-forgery): the host never comes from the caller.
 	page func(u *url.URL) (fetch, key string, ok bool)
+	// resolve marks a link shortener (naver.me): it maps a short link to the
+	// constant-prefix URL whose redirect the relay reads once, without
+	// following it. The redirect target must itself normalize to a page site
+	// (never another shortener); that site's page rule and image hosts apply.
+	// A shortener has no page rule and no image hosts of its own.
+	resolve func(u *url.URL) (fetch, key string, ok bool)
 
 	hostSet, imageHostSet map[string]bool // derived in init
 }
 
-func (s *previewSite) preview() bool { return s.page != nil }
+func (s *previewSite) preview() bool { return s.page != nil || s.resolve != nil }
+
+// shortener reports a link-shortener entry (see resolve).
+func (s *previewSite) shortener() bool { return s.resolve != nil }
 
 func (s *previewSite) ua() string {
 	if s.userAgent != "" {
@@ -100,6 +109,13 @@ var previewSites = []*previewSite{
 		id: "bunjang", name: "번개장터",
 		hosts: []string{"m.bunjang.co.kr", "bunjang.co.kr", "www.bunjang.co.kr"},
 	},
+	{
+		// 네이버 앱 「공유」의 단축 링크(naver.me/{code}). 릴레이가 리다이렉트 한 번만 읽고, 목적지가
+		// 위 미리보기 사이트(예: 네이버 뉴스)면 그 사이트 규칙으로 카드를 만든다. 그 밖의 목적지는 링크만.
+		id: "naver-me", name: "네이버",
+		hosts:   []string{"naver.me"},
+		resolve: naverMeShort,
+	},
 }
 
 // Derived from previewSites in init; read-only afterwards.
@@ -156,8 +172,11 @@ func indexPreviewSites(sites []*previewSite) (*previewIndex, error) {
 			return nil, fmt.Errorf("preview registry: bad or duplicate site %q", s.id)
 		}
 		ids[s.id] = true
-		if s.preview() != (len(s.imageHosts) > 0) {
-			return nil, fmt.Errorf("preview registry: site %q: image hosts iff preview", s.id)
+		if (s.page != nil) != (len(s.imageHosts) > 0) {
+			return nil, fmt.Errorf("preview registry: site %q: image hosts iff page rule", s.id)
+		}
+		if s.page != nil && s.resolve != nil {
+			return nil, fmt.Errorf("preview registry: site %q: page rule and shortener are exclusive", s.id)
 		}
 		s.hostSet, s.imageHostSet = map[string]bool{}, map[string]bool{}
 		for _, h := range s.hosts {
@@ -201,7 +220,11 @@ func normalizePreviewURL(raw string) (site *previewSite, fetch, key string, ok b
 	if site == nil || !site.preview() {
 		return nil, "", "", false
 	}
-	fetch, key, ok = site.page(u)
+	if site.shortener() {
+		fetch, key, ok = site.resolve(u)
+	} else {
+		fetch, key, ok = site.page(u)
+	}
 	if !ok {
 		return nil, "", "", false
 	}
@@ -227,7 +250,19 @@ var (
 	githubNumRe  = regexp.MustCompile(`^[0-9]{1,9}$`)
 	bbcArticleRe = regexp.MustCompile(`^[a-z0-9]{8,20}$`)
 	wikiTitleRe  = regexp.MustCompile(`^[A-Za-z0-9\-._~!$&'()*+,;=:@/%]{1,300}$`)
+	naverMeRe    = regexp.MustCompile(`^[A-Za-z0-9]{4,16}$`)
 )
+
+// naverMeShort: naver.me/{code} (4–16 alphanumerics, query dropped) →
+// https://naver.me/{code}, the URL whose redirect the relay reads once.
+func naverMeShort(u *url.URL) (fetch, key string, ok bool) {
+	seg := pathSegments(u)
+	if len(seg) != 1 || !naverMeRe.MatchString(seg[0]) {
+		return "", "", false
+	}
+	c := "https://naver.me/" + seg[0]
+	return c, c, true
+}
 
 // xPage is the v1 rule (normalizeXStatusURL): the cache identity is the
 // status id, so one post under any handle or host is fetched once.

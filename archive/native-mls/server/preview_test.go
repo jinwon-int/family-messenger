@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -702,5 +703,113 @@ func TestNormalizeImageURLRebuildsFromConstantHost(t *testing.T) {
 		if got, ok := normalizeImageURL(bad); ok {
 			t.Errorf("normalizeImageURL(%q) = %q, want refused", bad, got)
 		}
+	}
+}
+
+// naver.me short links: the relay reads the redirect once (never follows it
+// with the page client) and previews only a target that normalizes to a page
+// site, under that site's own rule. Anything else → 404 no_preview, nothing
+// fetched from the target. The resolution is cached like a page.
+func TestPreviewShortLink(t *testing.T) {
+	var mu sync.Mutex
+	location := "https://n.news.naver.com/article/079/0004214856?sid=101"
+	noRedirect := false
+	_, srv, fake := newPreviewRelay(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		loc, plain := location, noRedirect
+		mu.Unlock()
+		switch r.Host {
+		case "naver.me":
+			if r.Header.Get("Cookie") != "" || r.Header.Get("Authorization") != "" {
+				t.Errorf("credentials leaked upstream")
+			}
+			if plain {
+				io.WriteString(w, ogPage("naver", "", ""))
+				return
+			}
+			w.Header().Set("Location", loc)
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		case "n.news.naver.com":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			io.WriteString(w, ogPage("기사 제목", "기사 요약", "https://imgnews.pstatic.net/image/079/2026/11/28/a.jpg"))
+		default:
+			t.Errorf("unexpected upstream host %s", r.Host)
+			w.WriteHeader(http.StatusTeapot)
+		}
+	}))
+	hosts := func() (out []string) {
+		for _, r := range fake.requests() {
+			out = append(out, r.host+r.path)
+		}
+		return out
+	}
+
+	resp, body := getPreview(t, srv, previewQuery("https://naver.me/x9VfCExq"), map[string]string{
+		"Cookie": "CF_Authorization=secret-cookie", "Authorization": "Bearer secret-token",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d %s", resp.StatusCode, body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	wantImg := previewImagePath + "?u=" + url.QueryEscape("https://imgnews.pstatic.net/image/079/2026/11/28/a.jpg")
+	if got["url"] != "https://n.news.naver.com/article/079/0004214856" || got["site"] != "네이버 뉴스" ||
+		got["title"] != "기사 제목" || got["image"] != wantImg {
+		t.Fatalf("body %s", body)
+	}
+	if want := []string{"naver.me/x9VfCExq", "n.news.naver.com/article/079/0004214856"}; !reflect.DeepEqual(hosts(), want) {
+		t.Fatalf("upstream %v want %v", hosts(), want)
+	}
+	// Cached: neither the short link nor the page is fetched again.
+	if resp, body := getPreview(t, srv, previewQuery("https://naver.me/x9VfCExq?x=1"), nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("cached: %d %s", resp.StatusCode, body)
+	}
+	if n := fake.count(); n != 2 {
+		t.Fatalf("cache miss: %d upstream calls", n)
+	}
+
+	// Targets that must not be fetched: off-registry, private, http, link-only,
+	// a path the page rule refuses, another shortener (also relative), empty.
+	for i, loc := range []string{
+		"https://evil.example/article/079/0004214856",
+		"https://127.0.0.1/",
+		"http://n.news.naver.com/article/079/0004214856",
+		"https://www.threads.net/@u/post/abc",
+		"https://blog.naver.com/someone/224495742902",
+		"https://n.news.naver.com/main/ranking",
+		"https://naver.me/OtherCode",
+		"/AnotherCode",
+		"",
+	} {
+		mu.Lock()
+		location = loc
+		mu.Unlock()
+		before := fake.count()
+		code := fmt.Sprintf("bad%04d", i)
+		resp, body := getPreview(t, srv, previewQuery("https://naver.me/"+code), nil)
+		if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(body), "no_preview") {
+			t.Errorf("location %q: %d %s", loc, resp.StatusCode, body)
+		}
+		if n := fake.count() - before; n != 1 {
+			t.Errorf("location %q: %d upstream calls (only the short link may be fetched)", loc, n)
+		}
+	}
+
+	// A short link that answers without a redirect has no preview.
+	mu.Lock()
+	noRedirect = true
+	mu.Unlock()
+	if resp, body := getPreview(t, srv, previewQuery("https://naver.me/plain1"), nil); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("no redirect: %d %s", resp.StatusCode, body)
+	}
+	// A refused short link never reaches upstream.
+	before := fake.count()
+	if resp, _ := getPreview(t, srv, previewQuery("https://naver.me/a.b"), nil); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad code: %d", resp.StatusCode)
+	}
+	if fake.count() != before {
+		t.Errorf("bad code reached upstream")
 	}
 }
