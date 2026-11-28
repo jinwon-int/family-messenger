@@ -9,6 +9,7 @@ import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -151,6 +152,8 @@ private sealed interface PdfState {
  * 두 손가락으로 1~4배 확대(확대 중에는 끌어서 옮기기). 아래 「공유」·「다른 앱으로 열기」·「닫기」는 이미지 뷰어와 같다.
  * 열 수 없으면(비밀번호 PDF·손상) 「열 수 없음」 문구와 같은 버튼만 남는다 — 저장/공유로 떨어진다(C3 설계).
  */
+// `transformable(canPan = …)` 은 foundation 1.7 에서 실험 API — 1배에서 한 손가락 끌기를 목록 스크롤로 넘기려면 이 오버로드가 필요하다.
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun PdfViewer(opened: AttachmentFiles.Opened, onShare: () -> Unit, onOpenWith: () -> Unit, onClose: () -> Unit) {
     val context = LocalContext.current
