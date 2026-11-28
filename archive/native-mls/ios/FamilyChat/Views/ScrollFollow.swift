@@ -85,6 +85,14 @@ enum ScrollFollow {
     /// 바닥 표지가 화면 아래 끝에서 이 안이면 "맨 아래에 있다".
     static let nearBottom: Double = 24
 
+    /// 작성창에 포커스가 들어왔을 때 따라가기를 켜고 최신 글로 내려갈지(#908). 작성창을 직접 눌렀거나 하드웨어 키보드로 들어왔으면
+    /// 최신 대화에 답하는 중이라 내려간다. 말풍선에서 「답장」(밀어서 · 꾹 누르기)으로 들어왔으면 답할 글이 화면에 남아야 하므로
+    /// 지금 위치를 지킨다(오너 2026-11-28: 과거 글을 밀어서 답장하면 최신 글로 스크롤이 내려왔다). 답장을 보내면 내 글 도착
+    /// (`afterReload` → `.followAnimated`)이 종전대로 최신 글로 내린다.
+    static func followOnComposerFocus(fromReply: Bool) -> Bool {
+        !fromReply
+    }
+
     /// 끌어서 따라가기가 꺼졌지만 맨 아래로 돌아와 멈췄다 — 다시 따라간다(맨 아래에서 살짝 끌기만 해도 새 글을 놓치지 않게).
     static func shouldRefollow(following: Bool, sentinelBottom: Double, viewportHeight: Double, sinceDrag: TimeInterval) -> Bool {
         !following && viewportHeight > 0 && sinceDrag >= settleDelay && sentinelBottom <= viewportHeight + nearBottom

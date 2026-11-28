@@ -84,6 +84,12 @@ final class ScrollFollowTests: XCTestCase {
         XCTAssertEqual(ScrollFollow.afterReload(following: false, arrival: .init()), .stay)
     }
 
+    /// #908: 작성창을 직접 누르면 최신 글로 내려가고, 말풍선 「답장」(밀어서 · 꾹 누르기)으로 들어오면 답할 글 자리를 지킨다.
+    func testComposerFocusFollowsLatestUnlessEnteredFromReply() {
+        XCTAssertTrue(ScrollFollow.followOnComposerFocus(fromReply: false), "tapping the composer answers the latest conversation")
+        XCTAssertFalse(ScrollFollow.followOnComposerFocus(fromReply: true), "replying to an older bubble keeps it on screen")
+    }
+
     /// 끌기로 따라가기가 꺼져도 손을 떼고 맨 아래에 멈추면 다시 따라간다 — 끄는 중에는 아니다.
     func testRefollowOnlyAfterSettlingAtTheBottom() {
         XCTAssertTrue(ScrollFollow.shouldRefollow(following: false, sentinelBottom: 604, viewportHeight: 620, sinceDrag: 1))
