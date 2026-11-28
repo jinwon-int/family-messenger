@@ -40,6 +40,9 @@ struct RoomView: View {
     @State private var selecting: SelectableMessage?
     /// 꾹 누르기 「답장」으로 고른 글 — 작성창 위 띠로 보이고, 보낼 때 본문 앞에 인용 한 줄로 붙는다(2026-11-09).
     @State private var replying: ReplyTarget?
+    /// #908: 이번 작성창 포커스가 「답장」(밀어서 · 꾹 누르기)에서 왔다 — `onChange(of: composerFocused)` 가 최신 글로 내리지 않고
+    /// 한 번 쓰고 지운다. 이미 작성창에 커서가 있던 답장은 포커스 변화가 없으므로 켜지 않는다(다음 직접 진입을 막지 않게).
+    @State private var replyFocusPending = false
     @State private var attachBusy = false
     /// #405 P1: 승인 요청 seq → 상태(허락/거절 버튼을 보일지).
     @State private var approvalStates: [Int64: AgentApproval.State] = [:]
@@ -246,6 +249,13 @@ struct RoomView: View {
                 .onChange(of: composerFocused) { focused in
                     guard focused else { return }
                     selectingByKey = false
+                    let fromReply = replyFocusPending
+                    replyFocusPending = false
+                    // #908: 답장으로 들어온 포커스는 답할 글 자리를 지킨다(따라가기는 `startReply` 가 이미 껐다).
+                    guard ScrollFollow.followOnComposerFocus(fromReply: fromReply) else {
+                        model.noteScroll("\(room) composer-focus from=reply following=\(followLatest) → stay")
+                        return
+                    }
                     followLatest = true
                     hasNewBelow = false
                     scrollToLatest(proxy, animated: true)
@@ -486,10 +496,16 @@ struct RoomView: View {
     }
 
     /// 꾹 누르기 「답장」: 답할 글을 고르고 작성창에 커서를 넣는다. 저장된 글이면 릴레이 seq 를 함께(v2 `#번호`).
+    /// #908: 답할 글이 화면에 남도록 따라가기를 끄고(키보드로 칸이 줄어도 최하단 보정이 돌지 않게) 포커스 진입이 최신 글로
+    /// 내리지 않게 표시한다. `lastDrag` 를 찍는 이유는 `scrollToMessage` 와 같다 — 맨 아래 근처 글이면 `shouldRefollow` 가 곧바로
+    /// 따라가기를 다시 켜지 않게.
     private func startReply(_ item: AppModel.TimelineItem) {
         guard let original = MessageCopy.text(of: item.record) else { return }
         let seq = item.outgoing == nil && item.record.seq > 0 ? item.record.seq : nil
         replying = ReplyTarget(name: AgentRosterNames.person(item.record.senderDevice), seq: seq, original: original)
+        followLatest = false
+        tracking.lastDrag = Date()
+        if !composerFocused { replyFocusPending = true }
         composerFocused = true
     }
 
