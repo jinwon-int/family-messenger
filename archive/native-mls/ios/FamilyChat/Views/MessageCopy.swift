@@ -188,10 +188,32 @@ struct SelectableTextView: UIViewRepresentable {
     }
 }
 
+/// 키보드 블록 선택에서 화면이 따라갈 위치(「선택해서 복사」 창). 선택 변경 전후의 범위만으로 정하는 순수 규칙 — `MessageCopyTests`.
+enum SelectionFollow {
+    /// 이번 변경에서 움직인 쪽 끝의 글 위치(UTF-16 오프셋). 따라갈 끝을 정할 수 없으면 nil — UIKit 기본 동작에 맡긴다.
+    /// - 커서만(길이 0): 그 위치.
+    /// - 시작이 그대로·끝이 바뀜(Shift+↓·→, 아래로 늘리기/줄이기): 끝.
+    /// - 끝이 그대로·시작이 바뀜(Shift+↑·←): 시작.
+    /// - 둘 다 바뀌었지만 이전 시작이 새 끝이 됨(아래로 잡던 블록을 위로 넘김): 시작. 이전 끝이 새 시작이 됨: 끝.
+    /// - 그 밖(커서가 가운데 있을 때 ⌘A, 손가락으로 다른 곳을 다시 고름): nil. 커서가 맨 앞일 때 ⌘A 는 시작이 그대로라 끝을 따라간다.
+    static func movingOffset(old: NSRange, new: NSRange) -> Int? {
+        let newEnd = new.location + new.length
+        if new.length == 0 { return new.location }
+        let oldEnd = old.location + old.length
+        if new.location == old.location { return newEnd != oldEnd ? newEnd : nil }
+        if newEnd == oldEnd { return new.location }
+        if newEnd == old.location { return new.location }
+        if new.location == oldEnd { return newEnd }
+        return nil
+    }
+}
+
 /// 하드웨어 키보드로 커서를 움직이고 블록을 잡을 수 있지만 글은 바뀌지 않는 UITextView(받은 글은 고치지 않는다).
 /// 편집 가능 상태라야 iOS 가 방향키·Shift+방향키·⌘A 를 처리하므로 `isEditable = true` 로 두고, 글이 바뀌는 길을 모두 막는다:
 /// 입력·지우기·조합·바꾸기는 무시, 메뉴는 복사·선택·전체 선택만, 화면 키보드는 띄우지 않는다(빈 입력 뷰).
 final class KeyboardSelectableTextView: UITextView, UITextViewDelegate {
+    /// 직전 선택 — 다음 선택 변경에서 「움직인 쪽 끝」을 정하는 데 쓴다(`SelectionFollow`).
+    private var lastSelection = NSRange(location: 0, length: 0)
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
@@ -216,6 +238,29 @@ final class KeyboardSelectableTextView: UITextView, UITextViewDelegate {
     override func replace(_ range: UITextRange, withText text: String) {}
 
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool { false }
+
+    /// 키보드로 블록을 늘리고 줄일 때 **움직인 쪽 끝**이 보이게 스크롤한다. UIKit 은 선택이 바뀌면 범위의 시작만 보이게 해서,
+    /// Shift+↓ 로 아래로 늘리는 블록은 화면이 따라 내려가지 않았다(Shift+↑ 는 시작이 움직여 따라갔다 — 오너 실기기 2026-11-28).
+    func textViewDidChangeSelection(_ textView: UITextView) {
+        let new = selectedRange
+        defer { lastSelection = new }
+        guard let offset = SelectionFollow.movingOffset(old: lastSelection, new: new) else { return }
+        // UIKit 이 같은 변경에 하는 스크롤(시작 기준)이 끝난 뒤에 덮어쓴다. 키 반복으로 그 사이 선택이 또 바뀌었으면 마지막 것만 쓴다.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.selectedRange == new else { return }
+            self.reveal(offset: offset)
+        }
+    }
+
+    /// 글 위치 [offset] 의 커서가 위아래로 한 줄 여유를 두고 보이게 스크롤한다(이미 보이면 그대로).
+    private func reveal(offset: Int) {
+        guard let position = position(from: beginningOfDocument, offset: offset) else { return }
+        layoutIfNeeded()
+        let caret = caretRect(for: position)
+        guard !caret.isNull, !caret.isInfinite, caret.height > 0 else { return }
+        let margin = font?.lineHeight ?? caret.height
+        scrollRectToVisible(caret.insetBy(dx: 0, dy: -margin), animated: false)
+    }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         let allowed: [Selector] = [
