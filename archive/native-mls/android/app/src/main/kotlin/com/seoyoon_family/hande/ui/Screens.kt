@@ -138,6 +138,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.seoyoon_family.hande.core.AttachmentFiles
+import com.seoyoon_family.hande.core.PdfPages
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -1311,12 +1312,13 @@ fun RoomScreen(
     arrowStep: HardwareKeys.ArrowScrollStep = HardwareKeys.ArrowScrollStep.STANDARD,
 ) {
     val colors = LocalHandeColors.current
-    // #366 C · #338 C 단계 — 첨부: 말풍선을 누르면 열고(이미지는 화면 안 뷰어, 그 밖은 다른 앱으로), 작성창 📎 로 파일을 골라 보낸다.
+    // #366 C · #338 C 단계 — 첨부: 말풍선을 누르면 열고(이미지·PDF 는 화면 안 뷰어 — PDF 는 #698 C3, 그 밖은 다른 앱으로), 작성창 📎 로 파일을 골라 보낸다.
     // 연 바이트는 화면 상태에만 있고 이력에는 저장하지 않는다(FILE-V2 §4-2). 한 번에 하나만 연다.
     val attachScope = rememberCoroutineScope()
     val attachContext = LocalContext.current
     var opening by remember(room.room) { mutableStateOf<Long?>(null) }
     var viewing by remember(room.room) { mutableStateOf<AttachmentFiles.Opened?>(null) }
+    var pdfViewing by remember(room.room) { mutableStateOf<AttachmentFiles.Opened?>(null) }
     val toast: (String) -> Unit = { text -> android.widget.Toast.makeText(attachContext, text, android.widget.Toast.LENGTH_SHORT).show() }
     val openAttachment: ((MessageUi) -> Unit)? = onOpenAttachment?.let { open ->
         { m: MessageUi ->
@@ -1326,8 +1328,12 @@ fun RoomScreen(
                     val result = open(m.seq)
                     opening = null
                     when (result) {
-                        is AttachmentFiles.Opened ->
-                            if (result.kind == "image") viewing = result else AttachmentIo.openWith(attachContext, result, Strings.attachmentOpenWith)
+                        is AttachmentFiles.Opened -> when {
+                            result.kind == "image" -> viewing = result
+                            // 받은 바이트로 PDF 라고 판별한 것만 앱 안에서(평문이 다른 앱으로 가지 않게). 다른 앱은 뷰어 메뉴로만.
+                            PdfPages.opensInApp(result.mime) -> pdfViewing = result
+                            else -> AttachmentIo.openWith(attachContext, result, Strings.attachmentOpenWith)
+                        }
                         is AttachmentFiles.OpenFailed -> toast(result.message)
                     }
                 }
@@ -1353,6 +1359,14 @@ fun RoomScreen(
             onShare = { if (!AttachmentIo.share(attachContext, v, Strings.attachmentShare)) toast(Strings.attachmentNoApp) },
             onOpenWith = { AttachmentIo.openWith(attachContext, v, Strings.attachmentOpenWith) },
             onClose = { viewing = null },
+        )
+    }
+    pdfViewing?.let { v ->
+        PdfViewer(
+            v,
+            onShare = { if (!AttachmentIo.share(attachContext, v, Strings.attachmentShare)) toast(Strings.attachmentNoApp) },
+            onOpenWith = { AttachmentIo.openWith(attachContext, v, Strings.attachmentOpenWith) },
+            onClose = { pdfViewing = null },
         )
     }
     var draft by rememberSaveable(room.room) { mutableStateOf("") }

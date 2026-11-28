@@ -1,4 +1,5 @@
 // 첨부 열기·보내기의 Android 쪽 입출력(#366 C · #338 C 단계): 선택한 파일 읽기 · 임시 공유 파일(FileProvider) · 이미지 디코딩.
+// PDF 는 앱 안 뷰어(`PdfViewer`, #698 C3)로 열고, 「다른 앱으로 열기」(`openWith`)는 뷰어 메뉴에서 누를 때만.
 // 복호화한 첨부 바이트는 이력(`messages.db`)에 저장하지 않는다(FILE-V2 §4-2) — 열 때마다 다시 받고, 공유를 위해 앱 cache 의
 // `attachments/` 에만 잠깐 둔다. 그 디렉터리는 허브가 시작할 때 비운다(`clearShared`). 규칙(이름·확장자·크기)은 `core/AttachmentFiles`.
 package com.seoyoon_family.hande.ui
@@ -36,6 +37,7 @@ object AttachmentIo {
     /** 허브가 시작할 때(프로세스 하나에 한 번): 지난 실행이 남긴 임시 공유 파일을 지운다. */
     fun clearShared(context: Context) {
         File(context.cacheDir, SHARED_DIR).deleteRecursively()
+        clearPdfOpenDir(context) // #698 C3: 앱 안 PDF 뷰어가 남긴 `hande-open/`
     }
 
     /** `OpenDocument` 로 고른 파일을 읽는다(크기 상한 50 MiB — 넘으면 읽지 않는다). IO 스레드에서 부른다. */
@@ -118,7 +120,7 @@ object AttachmentIo {
         return FileProvider.getUriForFile(context, "${context.packageName}.files", file)
     }
 
-    /** 다른 앱으로 열기(ACTION_VIEW, 읽기 권한만 잠깐 준다). 받을 앱이 없으면 공유 시트로. */
+    /** 다른 앱으로 열기(ACTION_VIEW, 읽기 권한만 잠깐 준다). 받을 앱이 없으면 공유 시트로. 사진·PDF 는 뷰어의 메뉴에서만 부른다. */
     fun openWith(context: Context, opened: Opened, title: String) {
         val uri = sharedUri(context, opened)
         val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, opened.mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)

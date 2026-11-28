@@ -169,6 +169,8 @@ object Strings {
     const val attachmentShare = "공유"
     const val attachmentOpenWith = "다른 앱으로 열기"
     const val attachmentNoApp = "열 수 있는 앱이 없어요"
+    /** #698 C3: 앱 안 PDF 뷰어가 열지 못한 PDF(비밀번호로 보호·손상). 아래 「공유」·「다른 앱으로 열기」는 그대로 남는다. */
+    const val attachmentPdfUnreadable = "이 PDF는 앱에서 열 수 없어요(비밀번호로 보호됐거나 손상됐어요). 공유하거나 다른 앱으로 열 수 있어요."
     /** #698 C2: 말풍선 썸네일의 접근성 이름(누르면 크게 보기). */
     const val attachmentPhoto = "사진 첨부 — 눌러서 크게 보기"
     const val fileV2Invalid = "⚠ 첨부 정보가 올바르지 않아 열 수 없음"
