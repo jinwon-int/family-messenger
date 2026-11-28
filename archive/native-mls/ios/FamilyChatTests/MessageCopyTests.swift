@@ -35,4 +35,35 @@ final class MessageCopyTests: XCTestCase {
         XCTAssertNil(MessageCopy.text(of: record(.text, "")))
         XCTAssertNil(MessageCopy.text(of: record(.text, " \n\t")))
     }
+
+    // 「선택해서 복사」 창의 키보드 블록 선택이 화면을 따라가는 쪽(2026-11-28 오너 실기기: Shift+↓ 로 늘리면 아래가 안 보임).
+    func testSelectionFollowTracksTheEndWhenExtendingDown() {
+        // 커서 10 → Shift+↓ 로 [10, 15) → 끝(15)을 따라간다. 한 번 더 내려 [10, 40) → 40.
+        XCTAssertEqual(SelectionFollow.movingOffset(old: NSRange(location: 10, length: 0), new: NSRange(location: 10, length: 5)), 15)
+        XCTAssertEqual(SelectionFollow.movingOffset(old: NSRange(location: 10, length: 5), new: NSRange(location: 10, length: 30)), 40)
+        // 아래로 잡은 블록을 Shift+↑ 로 줄여도 움직이는 쪽은 끝.
+        XCTAssertEqual(SelectionFollow.movingOffset(old: NSRange(location: 10, length: 30), new: NSRange(location: 10, length: 12)), 22)
+    }
+
+    func testSelectionFollowTracksTheStartWhenExtendingUp() {
+        // 커서 50 → Shift+↑ 로 [42, 50) → 시작(42). 한 번 더 올려 [20, 50) → 20.
+        XCTAssertEqual(SelectionFollow.movingOffset(old: NSRange(location: 50, length: 0), new: NSRange(location: 42, length: 8)), 42)
+        XCTAssertEqual(SelectionFollow.movingOffset(old: NSRange(location: 42, length: 8), new: NSRange(location: 20, length: 30)), 20)
+    }
+
+    func testSelectionFollowAcrossTheAnchor() {
+        // 기준점 10 에서 아래로 [10, 15) 잡다가 위로 넘겨 [8, 10) → 시작(8). 다시 아래로 넘겨 [10, 25) → 끝(25).
+        XCTAssertEqual(SelectionFollow.movingOffset(old: NSRange(location: 10, length: 5), new: NSRange(location: 8, length: 2)), 8)
+        XCTAssertEqual(SelectionFollow.movingOffset(old: NSRange(location: 8, length: 2), new: NSRange(location: 10, length: 15)), 25)
+    }
+
+    func testSelectionFollowCaretAndUndecidable() {
+        // 블록을 풀고 커서만 움직이면 그 위치.
+        XCTAssertEqual(SelectionFollow.movingOffset(old: NSRange(location: 10, length: 5), new: NSRange(location: 15, length: 0)), 15)
+        // 커서가 가운데 있을 때 ⌘A(양 끝이 모두 바뀜)·손가락으로 다른 곳을 고름 → UIKit 기본 동작에 맡긴다.
+        XCTAssertNil(SelectionFollow.movingOffset(old: NSRange(location: 30, length: 0), new: NSRange(location: 0, length: 100)))
+        XCTAssertNil(SelectionFollow.movingOffset(old: NSRange(location: 10, length: 5), new: NSRange(location: 60, length: 4)))
+        // 선택이 그대로면(같은 범위 재통지) 움직인 끝이 없다.
+        XCTAssertNil(SelectionFollow.movingOffset(old: NSRange(location: 10, length: 5), new: NSRange(location: 10, length: 5)))
+    }
 }
