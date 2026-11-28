@@ -1,0 +1,14 @@
+# 1분 주기, 3회 연속 확정 → 다운 감지 ≤3분(#897 수용 기준). 기존 릴레이 워치독 타이머와 같은 설정.
+[Unit]
+Description=Family messenger relay watchdog off the active relay host (every minute)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+RandomizedDelaySec=10
+Persistent=false
+Unit=family-messenger-relay-offhost-watchdog.service
+
+[Install]
+WantedBy=timers.target

@@ -54,6 +54,22 @@ failed out-of-band write is kept in the state file (``oob_pending``) and retried
 next runs; a newer alert replaces an older one still waiting. A retry of the *primary*
 write does not produce a second out-of-band copy.
 
+Off-host mode (#897): with ``--fence-record FQDN`` the direct probe follows the active relay
+host instead of a fixed ``--direct-url``. Each run reads the single-writer fence
+(``_native-relay-active.<domain>``, the same DoH lookup as ``native_relay_fence.py``), maps the
+named host through ``--host-map host=address,...`` and probes ``--direct-template`` with
+``{host}`` replaced by that address. So a watcher on another node keeps watching the right host
+after a cutover such as #753. When the fence cannot be read the host from the previous run
+(``fence.host`` in the state file) is used and the summary says ``stale``; with no previous
+host the run does not advance the state at all (a DoH outage is not a relay outage) and exits 0.
+A fence naming a host missing from ``--host-map`` is a configuration error: exit 1, state
+untouched. The alert line names the watched host (``[yukson → seoseo]``).
+
+``--spool-event NAME`` (default ``health-alert``) sets the ``event`` of both spool records. A
+bridge in fleet-relay mode delivers events listed in ``CCC_PUSH_FLEET_RELAY_DIRECT_EVENTS`` to
+the owner room itself, so a dedicated name lets one watcher's alerts skip the fleet relay
+without moving every other ``health-alert`` of that node.
+
 Exit status: 0 whenever the run itself worked (whatever the relay state); 1 on I/O
 failure (state file, spool record, unreadable access env), 2 on usage errors. Secret
 values are read only to build request headers; they are never printed, logged or stored.
@@ -69,6 +85,7 @@ import urllib.error
 import urllib.request
 
 import homeserver_watchdog as hw
+import native_relay_fence as fence
 from push_spool import write_spool_record
 
 DEFAULT_STATE = '/var/lib/family-messenger-watchdog/relay-state.json'
@@ -90,6 +107,9 @@ OOB_RECORD_NAME_RE = re.compile(r'^health-alert-[a-z_]+-\d{13}\.json$')
 # Answers from Cloudflare Access itself (no origin involved): the edge is alive.
 ACCESS_EDGE_STATUSES = (301, 302, 303, 307, 308, 401, 403)
 ACCESS_KEYS = ('CF_ACCESS_CLIENT_ID', 'CF_ACCESS_CLIENT_SECRET')
+DEFAULT_EVENT = 'health-alert'
+EVENT_RE = re.compile(r'^[a-z][a-z0-9-]{0,47}$')
+HOST_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$')
 
 
 # --- access env ---------------------------------------------------------------------
@@ -183,11 +203,45 @@ def classify(direct_ok, edge_ok):
     return UP if edge_ok else EDGE
 
 
+# --- fence (off-host mode, #897) -------------------------------------------------------
+
+def parse_host_map(text):
+    """``{'seoseo': '100.88.73.41', ...}`` from ``host=address,host=address``; ValueError if malformed."""
+    hosts = {}
+    for item in (text or '').split(','):
+        item = item.strip()
+        if not item:
+            continue
+        name, sep, address = item.partition('=')
+        name, address = name.strip(), address.strip()
+        if not sep or not HOST_RE.match(name) or not address or not re.match(r'^[A-Za-z0-9.:\[\]-]+$', address):
+            raise ValueError('--host-map entries must be host=address')
+        hosts[name] = address
+    if not hosts:
+        raise ValueError('--host-map is empty')
+    return hosts
+
+
+def resolve_target(args, prev, reader=fence.active_host):
+    """(direct_url or None, fence_info). See the module docstring for the stale / skip rules."""
+    previous = prev.get('fence') if isinstance(prev.get('fence'), dict) else {}
+    try:
+        host, source = reader(args.fence_record, timeout=args.timeout), 'live'
+    except RuntimeError:
+        host, source = previous.get('host'), 'stale'
+    if not isinstance(host, str) or not host:
+        return None, {'host': None, 'source': 'unreadable'}
+    address = args.host_map.get(host)
+    if address is None:
+        return None, {'host': host, 'source': source, 'error': 'unmapped'}
+    return args.direct_template.replace('{host}', address), {'host': host, 'source': source}
+
+
 # --- alert text and record ----------------------------------------------------------
 
-def alert_text(node, alert, now, direct, edge, threshold):
+def alert_text(node, alert, now, direct, edge, threshold, target=None):
     """One line for the owner; addresses and secrets never appear in it."""
-    head = 'relay watchdog [%s]: ' % node
+    head = 'relay watchdog [%s]: ' % (node if not target else '%s → %s' % (node, target))
     state = alert['state']
     if state == UP:
         was = STATE_LABEL.get(alert.get('previous_state'), 'down')
@@ -236,7 +290,7 @@ def plan_conditions(alert, open_keys):
     return [key], [k for k in open_keys if k != key], [key]
 
 
-def spool_alert(spool, node, alert, text, now, opens=(), resolves=()):
+def spool_alert(spool, node, alert, text, now, opens=(), resolves=(), event=DEFAULT_EVENT):
     code = alert['code']
     marker = 'transition' if alert['kind'] == 'transition' else str(int(now))
     markers = ['@fleet-alert opens=%s' % key for key in opens]
@@ -244,7 +298,7 @@ def spool_alert(spool, node, alert, text, now, opens=(), resolves=()):
     tail = '\n'.join(markers)
     # The marker lines must survive whole, so the human line gives up the room for them.
     lines = [text[:max(0, MAX_TEXT - len(tail) - 1)]] + markers if markers else [text]
-    record = {'version': 1, 'event': 'health-alert', 'code': code, 'kind': alert['kind'],
+    record = {'version': 1, 'event': event, 'code': code, 'kind': alert['kind'],
               'node': node, 'recipient': 'owner', 'ts': hw.iso(now), 'status': STATE_LABEL[alert['state']],
               'tier': ALERT_TIERS[alert['state']],
               'text': '\n'.join(lines),
@@ -253,11 +307,11 @@ def spool_alert(spool, node, alert, text, now, opens=(), resolves=()):
     return write_spool_record(spool, name, record)
 
 
-def oob_record(node, alert, text, now):
+def oob_record(node, alert, text, now, event=DEFAULT_EVENT):
     """(name, record) of the out-of-band copy: the owner's line, nothing for the alert queue."""
     code = alert['code']
     marker = 'transition' if alert['kind'] == 'transition' else str(int(now))
-    record = {'version': 1, 'event': 'health-alert', 'code': code, 'kind': alert['kind'],
+    record = {'version': 1, 'event': event, 'code': code, 'kind': alert['kind'],
               'node': node, 'recipient': 'owner', 'ts': hw.iso(now), 'status': STATE_LABEL[alert['state']],
               'text': text,
               'dedup': 'relay-watchdog-oob:%s:%d:%s' % (code, int(alert['since']), marker)}
@@ -279,7 +333,7 @@ def read_oob_pending(prev):
 
 # --- run ----------------------------------------------------------------------------
 
-def run(args, now, direct, edge):
+def run(args, now, direct, edge, fence_info=None):
     """One cycle after the probes: debounce, alert, persist. Returns (summary, exit_code)."""
     candidate = classify(direct['ok'], edge['ok'])
     path = Path(args.state)
@@ -287,19 +341,25 @@ def run(args, now, direct, edge):
     state, alert = hw.advance(prev, candidate, now, args.threshold, args.realert_hours * 3600,
                               alert_codes=ALERT_CODES)
     state['last'] = {'direct': direct, 'edge': edge}
+    if fence_info is not None:
+        state['fence'] = {'host': fence_info['host'], 'source': fence_info['source']}
     open_keys = read_open_keys(prev)
     summary = {'state': STATE_LABEL.get(state['state']), 'candidate': STATE_LABEL[candidate],
                'streak': state['streak'], 'threshold': args.threshold, 'transition': state['transition'],
                'since': state['since'], 'direct': direct, 'edge': edge, 'updated': now, 'alert': 'none'}
+    if fence_info is not None:
+        summary['fence'] = fence_info
+    target = fence_info['host'] if fence_info else None
+    event = getattr(args, 'spool_event', DEFAULT_EVENT)
     code = 0
     if alert is not None:
-        text = alert_text(args.push_node, alert, now, direct, edge, args.threshold)
+        text = alert_text(args.push_node, alert, now, direct, edge, args.threshold, target)
         summary['text'] = text
         opens, resolves, after = plan_conditions(alert, open_keys)
         if args.push_spool:
             try:
                 summary['record'] = spool_alert(args.push_spool, args.push_node, alert, text, now,
-                                                opens, resolves)
+                                                opens, resolves, event)
                 summary['alert'] = '%s:%s' % (alert['kind'], alert['code'])
                 summary['tier'] = ALERT_TIERS[alert['state']]
                 state['last_alert'][alert['state']] = now
@@ -316,7 +376,7 @@ def run(args, now, direct, edge):
         oob = read_oob_pending(prev)
         if alert is not None and alert['kind'] != 'retry':
             # A retry repeats an alert whose out-of-band copy was already attempted.
-            name, record = oob_record(args.push_node, alert, summary['text'], now)
+            name, record = oob_record(args.push_node, alert, summary['text'], now, event)
             oob = {'name': name, 'record': record}
         summary['oob'] = 'none'
         if oob is not None:
@@ -338,8 +398,18 @@ def _http_url(p, value, flag):
 
 def parse_args(argv):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--direct-url', required=True, metavar='URL',
-                   help='relay base URL on the private network, e.g. http://<tailnet-ip>:<port>')
+    p.add_argument('--direct-url', metavar='URL',
+                   help='relay base URL on the private network, e.g. http://<tailnet-ip>:<port> '
+                        '(or follow the fence with --fence-record)')
+    p.add_argument('--fence-record', metavar='FQDN',
+                   help='off-host mode: probe the host named by this fence TXT record (#897)')
+    p.add_argument('--direct-template', metavar='URL',
+                   help='with --fence-record: direct base URL with {host} for the mapped address, '
+                        'e.g. http://{host}:18921')
+    p.add_argument('--host-map', metavar='HOST=ADDR,...',
+                   help='with --fence-record: fence host name -> private address, e.g. seoseo=100.88.73.41')
+    p.add_argument('--spool-event', default=DEFAULT_EVENT, metavar='NAME',
+                   help='event name of the spool records (default %(default)s)')
     p.add_argument('--edge-url', required=True, metavar='URL',
                    help='public relay base URL behind Cloudflare, e.g. https://hande.example.com')
     p.add_argument('--access-env', metavar='FILE',
@@ -360,7 +430,22 @@ def parse_args(argv):
     p.add_argument('--once', action='store_true', help='run one probe cycle and exit (the only mode; default)')
     p.add_argument('--json', action='store_true', help='print the run summary as one JSON line')
     args = p.parse_args(argv)
-    _http_url(p, args.direct_url, '--direct-url')
+    if bool(args.direct_url) == bool(args.fence_record):
+        p.error('give exactly one of --direct-url or --fence-record')
+    if args.direct_url:
+        _http_url(p, args.direct_url, '--direct-url')
+        if args.direct_template or args.host_map:
+            p.error('--direct-template/--host-map need --fence-record')
+    else:
+        if not args.direct_template or '{host}' not in args.direct_template:
+            p.error('--fence-record needs --direct-template containing {host}')
+        _http_url(p, args.direct_template, '--direct-template')
+        try:
+            args.host_map = parse_host_map(args.host_map)
+        except ValueError as e:
+            p.error(str(e))
+    if not EVENT_RE.match(args.spool_event):
+        p.error('--spool-event must be lower-case letters, digits and dashes')
     _http_url(p, args.edge_url, '--edge-url')
     if args.threshold < 1:
         p.error('--threshold must be >= 1')
@@ -373,7 +458,7 @@ def parse_args(argv):
     return args
 
 
-def main(argv=None, direct_fn=probe_direct, edge_fn=probe_edge, clock=time.time):
+def main(argv=None, direct_fn=probe_direct, edge_fn=probe_edge, clock=time.time, fence_fn=fence.active_host):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
         access = read_access_env(args.access_env) if args.access_env else None
@@ -381,10 +466,28 @@ def main(argv=None, direct_fn=probe_direct, edge_fn=probe_edge, clock=time.time)
         print('relay watchdog failed: access env: ' + type(e).__name__ + ': ' + str(e), file=sys.stderr)
         return 1
     now = clock()
-    direct = direct_fn(args.direct_url, args.timeout)
+    fence_info, direct_url = None, args.direct_url
+    if args.fence_record:
+        try:
+            prev = hw.read_state(Path(args.state))
+        except (OSError, ValueError) as e:
+            print('relay watchdog failed: ' + type(e).__name__ + ': ' + str(e), file=sys.stderr)
+            return 1
+        direct_url, fence_info = resolve_target(args, prev, fence_fn)
+        if direct_url is None:
+            # Nothing to probe: the state is left as it was (no streak, no alert).
+            unmapped = fence_info.get('error') == 'unmapped'
+            message = ('fence names %s, which is not in --host-map' % fence_info['host'] if unmapped
+                       else 'fence unreadable and no previous host; state not advanced')
+            if args.json:
+                print(json.dumps({'state': None, 'fence': fence_info, 'alert': 'none', 'skipped': message}))
+            else:
+                print('skipped: ' + message)
+            return 1 if unmapped else 0
+    direct = direct_fn(direct_url, args.timeout)
     edge = edge_fn(args.edge_url, args.timeout, access)
     try:
-        summary, code = run(args, now, direct, edge)
+        summary, code = run(args, now, direct, edge, fence_info)
     except (OSError, ValueError) as e:
         print('relay watchdog failed: ' + type(e).__name__ + ': ' + str(e), file=sys.stderr)
         return 1

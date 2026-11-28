@@ -1,0 +1,24 @@
+# 서서 밖 릴레이 감시(#897, #426 후속). 활성 릴레이 호스트·감시·알림 발신이 한 호스트(#753 이후 서서)에
+# 모여 있어 그 호스트가 죽으면 알림이 빈다. 이 유닛은 다른 노드(권장: 육손 — Tuwunel 홈서버와 남은 유일한
+# ccc-matrix-bridge가 있는 곳, DOC-4543)에서 돈다.
+#   - 직결: 펜스 TXT(_native-relay-active.<도메인>)가 가리키는 활성 호스트를 매 실행 읽어 그 호스트의 사설 주소로
+#     /v2/health 를 잰다(--fence-record · --direct-template · --host-map). 전환 뒤에도 대상이 따라간다.
+#   - 알림: 이 노드 spool 에 전용 이벤트(--spool-event, 예 relay-offhost-alert)로 쓴다. 같은 노드 Matrix 브리지가
+#     CCC_PUSH_FLEET_RELAY_DIRECT_EVENTS 에 그 이름을 두면 서서의 플릿 알림 릴레이를 거치지 않고 오너 방으로 직송한다.
+# 기존 family-messenger-relay-watchdog(활성 호스트 자신의 감시)와 상태 파일을 나눈다. 설치·활성화는 노드 변경이므로
+# 별도 승인 후 README 절차로 진행한다.
+[Unit]
+Description=Family messenger relay watchdog off the active relay host (fence-following)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/family-messenger/relay-offhost-watchdog.env
+ExecStart=/usr/bin/python3 /opt/family-messenger/scripts/relay_watchdog.py --once --json --fence-record ${RELAY_OFFHOST_FENCE_RECORD} --direct-template ${RELAY_OFFHOST_DIRECT_TEMPLATE} --host-map ${RELAY_OFFHOST_HOST_MAP} --edge-url ${RELAY_OFFHOST_EDGE_URL} --push-spool ${RELAY_OFFHOST_SPOOL} --push-node ${RELAY_OFFHOST_NODE} --spool-event ${RELAY_OFFHOST_EVENT} --state /var/lib/family-messenger-watchdog/relay-offhost-state.json $RELAY_OFFHOST_EXTRA_ARGS
+TimeoutStartSec=1min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+StateDirectory=family-messenger-watchdog
+StateDirectoryMode=0700

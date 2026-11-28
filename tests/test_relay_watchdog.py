@@ -576,5 +576,124 @@ class UnitTemplateTest(unittest.TestCase):
         self.assertNotIn('family-messenger-tuwunel', execstart[0])
 
 
+class OffHostFenceTest(unittest.TestCase):
+    """#897: a watcher on another node follows the fence to the active relay host."""
+
+    HOSTS = 'seoseo=100.88.73.41,soonwook=100.64.0.9'
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.spool = self.dir / 'spool'
+        self.spool.mkdir()
+        self.state = self.dir / 'relay-state.json'
+        self.t = NOW
+        self.urls = []
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir)
+
+    def tick(self, kind, fence_value, minutes=1, extra=()):
+        out = []
+        for _ in range(minutes):
+            direct, edge = PROBES[kind]
+            argv = ['--fence-record', '_native-relay-active.example.test',
+                    '--direct-template', 'http://{host}:18921', '--host-map', self.HOSTS,
+                    '--edge-url', 'https://e', '--state', str(self.state), '--push-node', 'yukson',
+                    '--push-spool', str(self.spool), '--json'] + list(extra)
+
+            def fence_fn(record, timeout=None):
+                if isinstance(fence_value, Exception):
+                    raise fence_value
+                return fence_value
+
+            def direct_fn(url, timeout):
+                self.urls.append(url)
+                return direct
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = rw.main(argv, direct_fn=direct_fn, edge_fn=lambda u, t, a: edge,
+                               clock=lambda: self.t, fence_fn=fence_fn)
+            out.append((code, json.loads(buf.getvalue())))
+            self.t += MINUTE
+        return out
+
+    def records(self):
+        return [json.loads((self.spool / n).read_text()) for n in sorted(p.name for p in self.spool.iterdir())]
+
+    def test_probes_the_host_the_fence_names_and_follows_a_cutover(self):
+        self.tick('up', 'seoseo', 2)
+        self.assertEqual(set(self.urls), {'http://100.88.73.41:18921'})
+        runs = self.tick('up', 'soonwook', 1)
+        self.assertEqual(self.urls[-1], 'http://100.64.0.9:18921')
+        self.assertEqual(runs[-1][1]['fence'], {'host': 'soonwook', 'source': 'live'})
+        self.assertEqual(json.loads(self.state.read_text())['fence'], {'host': 'soonwook', 'source': 'live'})
+
+    def test_alert_names_the_watched_host_and_no_address(self):
+        self.tick('up', 'seoseo', 3)
+        self.tick('down', 'seoseo', 3)
+        rec = self.records()[-1]
+        self.assertEqual(rec['code'], 'relay_down')
+        self.assertTrue(rec['text'].startswith('relay watchdog [yukson → seoseo]: RELAY DOWN'), rec['text'])
+        self.assertNotIn('100.88.73.41', rec['text'])
+
+    def test_unreadable_fence_uses_the_previous_host(self):
+        self.tick('up', 'seoseo', 1)
+        runs = self.tick('down', RuntimeError('fence lookup failed'), 3)
+        self.assertEqual(runs[-1][1]['fence'], {'host': 'seoseo', 'source': 'stale'})
+        self.assertEqual(self.urls[-1], 'http://100.88.73.41:18921')
+        self.assertEqual(runs[-1][1]['alert'], 'transition:relay_down')
+
+    def test_unreadable_fence_with_no_previous_host_does_not_advance(self):
+        runs = self.tick('down', RuntimeError('fence lookup failed'), 5)
+        self.assertEqual({r[0] for r in runs}, {0})
+        self.assertTrue(all('skipped' in r[1] for r in runs))
+        self.assertEqual(self.urls, [])
+        self.assertFalse(self.state.exists())
+        self.assertEqual(self.records(), [])
+
+    def test_unmapped_host_is_a_config_error_and_does_not_probe(self):
+        self.tick('up', 'seoseo', 1)
+        before = self.state.read_text()
+        runs = self.tick('down', 'gwakga', 3)
+        self.assertEqual({r[0] for r in runs}, {1})
+        self.assertEqual(runs[-1][1]['fence'], {'host': 'gwakga', 'source': 'live', 'error': 'unmapped'})
+        self.assertEqual(self.state.read_text(), before)
+        self.assertEqual(len(self.urls), 1)
+
+    def test_spool_event_is_set_on_both_records(self):
+        oob = self.dir / 'oob'
+        oob.mkdir()
+        extra = ['--spool-event', 'relay-offhost-alert', '--oob-spool', str(oob)]
+        self.tick('up', 'seoseo', 3, extra)
+        self.tick('edge', 'seoseo', 3, extra)
+        self.assertEqual([r['event'] for r in self.records()], ['relay-offhost-alert'])
+        oob_recs = [json.loads((oob / n).read_text()) for n in os.listdir(oob)]
+        self.assertEqual([r['event'] for r in oob_recs], ['relay-offhost-alert'])
+        self.assertEqual(self.records()[0]['code'], 'relay_edge')
+
+    def test_usage_errors(self):
+        base = ['--edge-url', 'https://e', '--state', str(self.state)]
+        bad = [
+            ['--direct-url', 'http://h:1', '--fence-record', 'x.test'],          # both
+            [],                                                                   # neither
+            ['--fence-record', 'x.test', '--host-map', self.HOSTS],               # no template
+            ['--fence-record', 'x.test', '--direct-template', 'http://h:1', '--host-map', self.HOSTS],  # no {host}
+            ['--fence-record', 'x.test', '--direct-template', 'http://{host}:1', '--host-map', 'seoseo'],
+            ['--direct-url', 'http://h:1', '--host-map', self.HOSTS],             # map without fence
+            ['--direct-url', 'http://h:1', '--spool-event', 'Bad Event'],
+        ]
+        for extra in bad:
+            with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as cm:
+                    rw.parse_args(base + extra)
+                self.assertEqual(cm.exception.code, 2)
+
+    def test_default_event_is_unchanged(self):
+        self.tick('up', 'seoseo', 3)
+        self.tick('down', 'seoseo', 3)
+        self.assertEqual(self.records()[-1]['event'], 'health-alert')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -243,3 +243,42 @@ systemctl daemon-reload && systemctl enable --now family-messenger-relay-watchdo
 - #426 의 "봇 측 신호(`halted`/403/`history_gap` → health 파일)"는 이 PR 에 없다 — native-bot(Rust) 변경이라 후속 PR.
 - 릴레이 폴백 전환(#440 warm standby)과는 독립: 이 워치독은 지금 지정된 릴레이 주소만 본다. 전환 후에는 env 의
   직결 URL 을 새 주 릴레이로 바꾼다(전환 런북에 포함).
+
+## 서서 밖 감시 — 펜스 추종 + Matrix 직송 (#897)
+
+#753 이후 활성 릴레이·위 릴레이 워치독·Telegram 폴백·플릿 알림 수신기(8795)가 **모두 서서 한 호스트**에 있다.
+서서가 통째로 죽으면 알릴 경로가 없다. 「한데」는 그 릴레이이고, 다른 노드 브리지의 push도 서서 8795로 간다.
+서서를 거치지 않는 경로는 육손(Tuwunel 홈서버 + 남은 유일한 `ccc-matrix-bridge`, DOC-4543)뿐이라 감시 노드를
+육손으로 둔다(오너 채택 2026-11-28, 설계 #897 코멘트).
+
+- **유닛**: `family-messenger-relay-offhost-watchdog.service`·`.timer`, env `relay-offhost-watchdog.env.example`.
+  상태 파일은 `relay-offhost-state.json`으로 기존 워치독과 나눈다.
+- **펜스 추종**: `--fence-record`가 매 실행 활성 호스트를 읽고, `--host-map`으로 사설 주소를 찾아
+  `--direct-template`의 `{host}` 자리에 넣는다. 펜스를 못 읽으면 직전 호스트(`fence.host`)를 쓰고(`stale`),
+  직전 호스트도 없으면 그 실행은 판정을 진행하지 않는다(DoH 장애 ≠ 릴레이 장애). 매핑에 없는 호스트는 exit 1.
+- **직송**: `--spool-event relay-offhost-alert`로 쓰고, 같은 노드 Matrix 브리지 env에
+  `CCC_PUSH_FLEET_RELAY_DIRECT_EVENTS=SelfUpdate,relay-offhost-alert`를 둔다(기본값 `SelfUpdate`를 함께 적어야 유지된다).
+  그 이벤트만 플릿 릴레이 대신 오너 방으로 간다. 이름을 따로 두는 이유는 `health-alert` 전체를 옮기지 않기 위해서다.
+  브리지가 오너 방을 못 찾으면 직송 이벤트도 플릿 릴레이로 넘어가므로(`bot.py` `_deliver_direct`), 설치 뒤 시험 1건으로
+  오너 방 도착을 확인한다.
+- **오너 쪽 조건**: 오너 휴대폰 Matrix 앱의 그 방 알림이 켜져 있어야 실제로 닿는다.
+
+### 설치 (노드 변경 — 건별 오너 승인)
+1. 육손 `/opt/family-messenger` 체크아웃 갱신(이 변경 포함).
+2. `/etc/family-messenger/relay-offhost-watchdog.env`(0600) 작성 — 예시 파일 기준, 실제 도메인·주소는 노드에서만.
+3. 유닛·타이머 설치 → `systemctl start family-messenger-relay-offhost-watchdog.service` 1회(`--json` 출력에
+   `fence.source=live`, `candidate=up`) → `enable --now ...timer`.
+4. `ccc-matrix-bridge` env에 `CCC_PUSH_FLEET_RELAY_DIRECT_EVENTS=SelfUpdate,relay-offhost-alert` 추가 → 브리지 재시작
+   (유휴 게이트). 시험 레코드 1건으로 오너 방 도착 확인.
+
+### 드릴 — `relay-offhost-drill.sh` (실행은 승인 하에, 새벽 창)
+감시 노드에서 돈다. 펜스로 활성 호스트를 정하고 그 호스트의 유닛 하나만 300초 멈춘 뒤, Matrix 브리지 `sent/`로
+옮겨진 이 이벤트 레코드의 시각으로 판정한다(정지 후 ≤180초 기대 code, 재개 후 ≤180초 `relay_recovered`, 각 1건).
+대상 호스트에 먼저 자기 복구 타이머(`systemd-run --on-active`)를 걸고, 사전 점검이 하나라도 어긋나면 아무것도
+바꾸지 않는다(`PREFLIGHT_FAILED_NO_CHANGE`). `--preflight`는 읽기 전용이다.
+
+- `--mode edge`: 활성 호스트 터널(`--units host=unit`) 정지 → 기대 `relay_edge`.
+  **서서는 `cloudflared.service` 하나가 서서의 모든 공개 호스트(위키·파일보관함 등)를 맡는다** — 서서가 활성일 때
+  edge 드릴은 그 호스트들도 300초 끊는다. 순욱은 릴레이 전용 `cloudflared-relay-standby.service`가 있다.
+- `--mode relay`: 활성 호스트 `native-relay.service` 정지 → 기대 `relay_down`(가족·에이전트 채팅 300초 중단).
+- 「6시간 안 재알림 0」은 결과 파일에 적힌 시각 이후 같은 `sent/`를 다시 세어 확인한다.
